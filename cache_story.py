@@ -346,18 +346,23 @@ class CacheStory:
             fill_more.append(Sequence(Wait(0.05 * k), self.store_pair(fake, 0.4)))
         info = a.attachNewNode("mem")
         lines_ = ["for EVERY token the cache keeps:",
-                  "K and V  x  32 layers  x  4096 numbers",
+                  "our tiny model:  K and V  x  2 layers  x  32 numbers  =  128",
+                  "a 7B model:  K and V  x  32 layers  x  4096 numbers",
                   "= 262,144 numbers  =  about 0.5 MB",
-                  "",
                   "10,000 tokens  ->  about 5 GB of GPU memory"]
+        fill(info, SHELF[0] - 0.3, SHELF[2] - 1.0 - len(lines_) * 0.55 + 0.05, SHELF[1], SHELF[2] - 0.45,
+             (0.03, 0.03, 0.04, 1), 0.96, y=-0.05)
+        rect(info, SHELF[0] - 0.3, SHELF[2] - 1.0 - len(lines_) * 0.55 + 0.05, SHELF[1], SHELF[2] - 0.45, DIM, 1.2,
+             y=-0.06)
         for i, s in enumerate(lines_):
-            text(info, s, Point3(SHELF[0], 0, SHELF[2] - 1.0 - i * 0.55), 0.34,
-                 YELLOW if i in (2, 4) else WHITE, align=TextNode.ALeft)
+            text(info, s, Point3(SHELF[0], -0.08, SHELF[2] - 1.0 - i * 0.55), 0.34,
+                 YELLOW if i in (3, 4) else (GREY if i == 1 else WHITE), align=TextNode.ALeft)
         info.hide()
         seq = Sequence(self.view(Point3((SHELF[0] + SHELF[1]) / 2, 0, SHELF[2] + 0.4), 0, 0, 19),
                        self.counter(""), fill_more, Wait(0.3), Func(info.show), fade_in(info, 0.6))
-        return ("The price: memory. The cache must hold K and V for every token, in every layer (numbers for a "
-                "typical 7-billion-parameter model, 16-bit). That is why long conversations are expensive, why "
+        return ("The price: memory. The cache must hold K and V for every token, in every layer - the K and V "
+                "columns you saw inside attention (here for our tiny model and for a typical 7-billion-parameter "
+                "model, 16-bit). That is why long conversations are expensive, why "
                 "models have a context limit, and why newer models use tricks to shrink the cache.", seq)
 
     # ================================================================ 5 request 2: prefix cache hit

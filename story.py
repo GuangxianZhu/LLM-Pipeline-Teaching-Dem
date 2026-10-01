@@ -26,8 +26,8 @@ from tf_steps import TransformerSteps, disp
 STAGES = ["Context", "Tokens", "Embedding", "Attention", "Add & Norm", "Feed Fwd", "Output", "Tool", "Answer"]
 
 SEC_A = Point3(0, 0, 0)
-SEC_P = Point3(560, 0, 0)
-SEC_T = Point3(610, 0, 0)
+SEC_P = Point3(292, 0, 0)       # the prediction loop continues the highway to the right
+SEC_T = Point3(345, 0, 0)
 
 TOOL_PANELS = {"calculator": (-1.5, 3.6), "run_terminal": (9.0, 3.6),
                "plot_chart": (-1.5, -2.6), "generate_image": (9.0, -2.6)}
@@ -150,6 +150,7 @@ class Story(TransformerSteps):
             xs.append(x + w / 2)
             x += w + gap
         z = 2.0
+        self.a_tokens, self.a_tok_x = [], xs
         seq = Parallel(Sequence(fade_out(self.sentence, 0.5), Func(self.sentence.hide)),
                        LerpColorScaleInterval(self.hidden, 0.6, (1, 1, 1, 0.45)))
         for i, (t, w) in enumerate(zip(toks, widths)):
@@ -159,7 +160,10 @@ class Story(TransformerSteps):
             rect(g, xx - w / 2, z - 0.35 * f, xx + w / 2, z + 0.62 * f, c, 2.2)
             text(g, disp(t), Point3(xx, 0, z), sc * f, WHITE)
             text(g, str(self.T["ids"][i]), Point3(xx, 0, z - 0.85 * f), 0.32 * f, GREY)
+            if i == self.hi:
+                rect(g, xx - w / 2 - 0.12, z - 1.2 * f, xx + w / 2 + 0.12, z + 0.78 * f, YELLOW, 2.6, y=-0.03)
             g.hide()
+            self.a_tokens.append(g)
             seq.append(Sequence(Wait(0.3 + 0.08 * i), Func(g.show), fade_in(g, 0.4)))
         note = text(self.board, "<sys> = the whole system prompt, squeezed into ONE token in this tiny model.   "
                     "<user> / <ai> mark who is speaking.", Point3(0, 0, -0.6), 0.34, GREY)
@@ -167,6 +171,7 @@ class Story(TransformerSteps):
         seq.append(Sequence(Wait(1.6), Func(note.show), fade_in(note, 0.5)))
         parts = [disp(t) for t in toks if not t.startswith(" ") and t.isalpha() and t not in toks[2:3]]
         extra = (" Look: '{}' is only part of a word.".format(parts[0]) if parts else "")
+        extra += " The yellow one, <ai>, is the token we will follow all the way through the model."
         return ("TOKENIZER: the text is cut into TOKENS (words or pieces of words) and each token gets its ID number "
                 "in the model's vocabulary ({} tokens).".format(self.V) + extra,
                 Sequence(Func(self.app.ui.arch.highlight, "input"), self.view(SEC_A + Vec3(0, 0, 2.0), 0, 0, 24), seq))

@@ -140,6 +140,18 @@ class UI:
                                       fg=(0.9, 0.9, 0.93, 1), font=f, align=TextNode.ALeft, wordwrap=19.5,
                                       mayChange=True)
         self.chat_lines = []
+        # ---- bottom right: the tracker (the followed token's current 32 numbers)
+        self.tracker = DirectFrame(parent=app.a2dBottomRight, frameColor=PANEL_BG,
+                                   frameSize=(-RIGHT_W + 0.02, -0.02, 0.06, 0.86))
+        self.trk_title = OnscreenText("", parent=self.tracker, pos=(-RIGHT_W / 2, 0.8), scale=0.03, fg=YELLOW,
+                                      font=f, mayChange=True)
+        self.trk_where = OnscreenText("", parent=self.tracker, pos=(-RIGHT_W + 0.2, 0.72), scale=0.026,
+                                      fg=WHITE, font=f, align=TextNode.ALeft, wordwrap=11, mayChange=True)
+        self.trk_hist = OnscreenText("", parent=self.tracker, pos=(-RIGHT_W + 0.2, 0.55), scale=0.022,
+                                     fg=GREY, font=f, align=TextNode.ALeft, wordwrap=12.5, mayChange=True)
+        self.trk_cells = None
+        self.trk_steps = []
+        self.tracker.hide()
         # ---- top: stage chips
         self.chips = []
         self.stages = list(STAGES)
@@ -189,11 +201,35 @@ class UI:
         if len(s) > 120:
             s = s[:117] + "..."
         self.chat_lines.append("{}:  {}".format(who, s))
-        self.chat_text.setText("\n\n".join(self.chat_lines[-4:]))
+        self.chat_text.setText("\n\n".join(self.chat_lines[-3:]))
 
     def clear_chat(self):
         self.chat_lines = []
         self.chat_text.setText("")
+
+    def track(self, token, vec, scale, where):
+        """Show the followed token's current vector (one column of coloured cells)."""
+        from kit import heatmap
+        import numpy as np
+        if self.trk_cells:
+            self.trk_cells.removeNode()
+        v = np.asarray(vec)[None, :].T
+        h = 0.68 / len(vec)
+        self.trk_cells = heatmap(self.tracker, v, -RIGHT_W + 0.06, 0.76, 0.1, h, scale, gap=0.08)
+        self.trk_title.setText("following: {}".format(token))
+        if not self.trk_steps or self.trk_steps[-1] != where:
+            self.trk_steps.append(where)
+        self.trk_where.setText("now:\n" + where)
+        past = self.trk_steps[:-1]
+        self.trk_hist.setText(("path so far:\n" + "\n".join(past[-9:])) if past else "")
+        self.tracker.show()
+
+    def reset_tracker(self):
+        self.trk_steps = []
+        if self.trk_cells:
+            self.trk_cells.removeNode()
+            self.trk_cells = None
+        self.tracker.hide()
 
     def set_btn(self, key, label):
         self.btn[key]["text"] = label
@@ -247,6 +283,7 @@ class App(ShowBase):
         self.board = self.render.attachNewNode("board")
         self.board.setLightOff()
         self.ui.clear_chat()
+        self.ui.reset_tracker()
         self.ui.mark_question(self.sc_i)
         sc = SCENARIOS[self.sc_i]
         self.ui.set_stages(CacheStory.stages if sc.get("kind") == "cache" else STAGES)
@@ -281,7 +318,8 @@ class App(ShowBase):
             return
         self.idx += 1
         st = self.steps[self.idx]
-        default_map = {"Context": ("input",), "Tokens": ("input",), "Output": ("linear", "softmax", "output")}
+        default_map = {"Context": ("input",), "Tokens": ("input",), "Output": ("linear", "softmax", "output"),
+                       "Why reuse": ("attn",), "KV cache": ("attn",), "Memory": ("attn",)}
         self.ui.arch.highlight(*default_map.get(st.stage, ()))
         caption, ival = st.build()
         self.ui.set_stage(st.stage)
