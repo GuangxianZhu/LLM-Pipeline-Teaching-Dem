@@ -393,5 +393,31 @@ class App(ShowBase):
         self.ui.set_btn("hide", "Hide panels  (H)" if self.panels_on else "Show panels  (H)")
 
 
+def self_test(app):
+    """LLMPipelineDemo.exe --selftest : play every question (fast) and report, e.g. to check a new build."""
+    import traceback
+    ok = True
+    for deep in (True, False):
+        if not deep:
+            app.toggle_deep()
+        for i in range(len(SCENARIOS)):
+            app.pick(i)
+            try:
+                for _ in range(len(app.steps)):
+                    app.next()
+                    if app.ival:
+                        app.ival.finish()
+                    app.taskMgr.step()
+                print("selftest", "deep" if deep else "quick", i + 1, "ok", flush=True)
+            except Exception:
+                traceback.print_exc()
+                ok = False
+    print("SELFTEST", "PASSED" if ok else "FAILED", flush=True)
+    sys.exit(0 if ok else 1)
+
+
 if __name__ == "__main__":
-    App().run()
+    app = App()
+    if "--selftest" in sys.argv:
+        self_test(app)
+    app.run()

@@ -13,12 +13,33 @@ import operator
 import os
 import random
 import subprocess
+import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):                  # the packaged .exe: data lives next to the exe
+    HERE = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(HERE, "outputs")
 FILES_DIR = os.path.join(HERE, "demo_files")      # the folder the terminal tool looks at
 
+def _load_frozen_matplotlib():
+    """In the packaged .exe matplotlib looks for its data folder next to its own __file__, which points to
+    a folder that does not exist. Import it by hand with __file__ next to the .exe, where mpl-data is."""
+    import importlib.util
+    spec = importlib.util.find_spec("matplotlib")
+    module = importlib.util.module_from_spec(spec)
+    module.__file__ = os.path.join(HERE, "matplotlib.py")      # -> HERE/mpl-data
+    sys.modules["matplotlib"] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        del sys.modules["matplotlib"]
+        raise
+
+
 try:
+    if getattr(sys, "frozen", False) and "matplotlib" not in sys.modules:
+        _load_frozen_matplotlib()
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -26,6 +47,8 @@ try:
     import numpy as np
     HAVE_MPL = True
 except Exception:  # pragma: no cover - shown to the user instead
+    import traceback
+    traceback.print_exc()                          # ends up in the log file of the packaged .exe
     HAVE_MPL = False
 
 # chart colours (dark screen)
@@ -90,8 +113,9 @@ def run_terminal(command):
         out = "REFUSED: '{}' is not on the whitelist".format(command)
     else:
         try:
+            flags = 0x08000000 if os.name == "nt" else 0          # CREATE_NO_WINDOW: no console pops up
             r = subprocess.run(_WHITELIST[command], cwd=FILES_DIR, capture_output=True,
-                               text=True, timeout=5)
+                               text=True, errors="replace", timeout=5, creationflags=flags)
             out = (r.stdout or r.stderr).strip()
         except Exception as e:  # e.g. command missing
             out = "ERROR: {}".format(e)

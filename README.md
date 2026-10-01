@@ -17,6 +17,19 @@ python main.py
 Only `panda3d`, `numpy` and `matplotlib` are needed. Works offline. Each student runs it on their own
 computer (Windows / macOS / Linux).
 
+## Windows version for students (no Python needed)
+
+Give students `dist/LLMPipelineDemo-win64.zip`: unzip, double-click `LLMPipelineDemo.exe`
+(see `HOW TO RUN.txt` inside). To rebuild it after changing the code (works on Windows, macOS or Linux):
+
+```
+pip install panda3d
+python build_windows.py          # -> build/win_amd64/  and  dist/LLMPipelineDemo-win64.zip
+```
+
+`LLMPipelineDemo.exe --selftest` plays every question quickly and reports PASSED / FAILED.
+Errors of the .exe go to `%APPDATA%\LLMPipelineDemo\output.log`.
+
 ## Controls
 
 | Key / mouse | Action |
@@ -115,6 +128,7 @@ computer (Windows / macOS / Linux).
 | `sim.py` | tokenizer helpers |
 | `tools.py` | the four real tools |
 | `scenarios.py` | the seven questions |
+| `setup.py`, `build_windows.py`, `build-requirements.txt` | packaging the Windows .exe |
 | `demo_files/` | sample files the terminal tool lists |
 | `style_sample.py` | the standalone style sample |
 | `legacy_factory/` | the first version (factory / conveyor-belt look), kept for reference |

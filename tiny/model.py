@@ -23,10 +23,14 @@ forward(..., trace=True) records every intermediate matrix, which the animation 
 """
 import json
 import os
+import sys
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):                  # the packaged .exe: tiny/ lives next to the exe
+    HERE = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "tiny")
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
 EPS = 1e-5
 
 
@@ -64,7 +68,7 @@ class TinyGPT:
         self.dh = self.d // self.h
 
     def ids(self, toks):
-        return [self.index[t] for t in toks]
+        return [self.index.get(t, 0) for t in toks]          # unknown token (e.g. odd tool output) -> <pad>
 
     def forward(self, toks, trace=False):
         w = self.w
