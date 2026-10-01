@@ -367,3 +367,52 @@ def column(parent, x, z_top, vals, color=WHITE, scale=0.34, dz=0.48, y=0.0, brac
         lines(col, [[(bx - s * 0.12, y, bz1), (bx, y, bz1), (bx, y, bz0), (bx - s * 0.12, y, bz0)]],
               bracket, 1.6)
     return col
+
+
+# ------------------------------------------------------------------ heatmaps (Claude Opus 写的)
+def value_color(v, scale=1.0):
+    """Diverging colour: negative = blue, zero = near black, positive = warm red/orange."""
+    t = math.tanh(v / scale) if scale else 0.0
+    a = abs(t)
+    if t >= 0:
+        return (0.10 + 0.88 * a, 0.10 + 0.40 * a, 0.12 + 0.18 * a, 1)
+    return (0.10 + 0.20 * a, 0.10 + 0.52 * a, 0.12 + 0.86 * a, 1)
+
+
+def heatmap(parent, M, x0, z0, cw, ch, scale=1.0, gap=0.12, y=0.0, colors=None):
+    """
+    Draw matrix M (rows x cols) as coloured cells in the board plane, ONE mesh.
+    Cell (r, c) has its top-left corner at (x0 + c*cw, z0 - r*ch). Returns the NodePath.
+    `colors` may be a function value -> rgba.
+    """
+    import numpy as _np
+    M = _np.atleast_2d(_np.asarray(M, dtype=float))
+    R, C = M.shape
+    vd = GeomVertexData("heat", GeomVertexFormat.getV3c4(), Geom.UHStatic)
+    vd.setNumRows(R * C * 4)
+    vw = GeomVertexWriter(vd, "vertex")
+    cwr = GeomVertexWriter(vd, "color")
+    tris = GeomTriangles(Geom.UHStatic)
+    gx, gz = cw * gap, ch * gap
+    i = 0
+    fn = colors or (lambda v: value_color(v, scale))
+    for r in range(R):
+        for c in range(C):
+            v = M[r, c]
+            col = (0.04, 0.04, 0.05, 1) if not _np.isfinite(v) else fn(v)
+            xa, xb = x0 + c * cw + gx / 2, x0 + (c + 1) * cw - gx / 2
+            za, zb = z0 - (r + 1) * ch + gz / 2, z0 - r * ch - gz / 2
+            for (px, pz) in ((xa, za), (xb, za), (xb, zb), (xa, zb)):
+                vw.addData3(px, y, pz)
+                cwr.addData4(*col)
+            tris.addVertices(i, i + 1, i + 2)
+            tris.addVertices(i, i + 2, i + 3)
+            i += 4
+    np_ = parent.attachNewNode(_geom_node("heat", vd, tris))
+    np_.setTwoSided(True)
+    return np_
+
+
+def shape_label(parent, s, pos, scale=0.32, color=GREY):
+    """Matrix shape in brackets, e.g. '13 x 32'."""
+    return text(parent, s.replace("x", "×") if "×" not in s else s, pos, scale, color, Fonts.symbol)

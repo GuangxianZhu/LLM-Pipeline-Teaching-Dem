@@ -37,13 +37,14 @@ from direct.interval.IntervalGlobal import Func, Sequence                    # n
 from direct.showbase.ShowBase import ShowBase                                # noqa: E402
 from panda3d.core import AntialiasAttrib, Point3, TextNode                   # noqa: E402
 
+from archmap import ArchMap                                                  # noqa: E402
 from kit import GREY, WHITE, YELLOW, Fonts                                   # noqa: E402
 from scenarios import SCENARIOS                                              # noqa: E402
 from cache_story import CacheStory                                         # noqa: E402
 from story import SEC_A, STAGES, Story                                       # noqa: E402
 
-PANEL_BG = (0.04, 0.04, 0.05, 0.62)
-LEFT_W, RIGHT_W = 0.70, 0.44          # screen space taken by the side panels (aspect2d units)
+PANEL_BG = (0.04, 0.04, 0.05, 0.9)
+LEFT_W, RIGHT_W = 0.74, 0.52          # screen space taken by the side panels (aspect2d units)
 SHORT = ["Hi! Who are you?", "What is 17% of 2350?", "Tank temperature chart",
          "Cat in a cleanroom suit", "Count files (terminal)", "Files -> bar chart (2 tools)",
          "Why so fast? (cache)"]
@@ -115,7 +116,7 @@ class UI:
         f = Fonts.serif
         self.root = app.aspect2d.attachNewNode("ui")
         # ---- left: questions + conversation
-        left = DirectFrame(parent=app.a2dTopLeft, frameColor=PANEL_BG, frameSize=(0, LEFT_W - 0.04, -1.3, 0),
+        left = DirectFrame(parent=app.a2dTopLeft, frameColor=PANEL_BG, frameSize=(0, LEFT_W - 0.04, -1.96, 0),
                            pos=(0.02, 0, -0.02))
         self.left = left
         OnscreenText("LLM Pipeline", parent=left, pos=(0.04, -0.075), scale=0.05, fg=WHITE, font=f,
@@ -125,14 +126,19 @@ class UI:
         self.q_buttons = []
         for i, sc in enumerate(SCENARIOS):
             b = DirectButton(parent=left, text="{}   {}".format(i + 1, SHORT[i]), text_font=f,
-                             text_scale=0.028, text_align=TextNode.ALeft, text_fg=(0.92, 0.92, 0.95, 1),
-                             text_pos=(0.02, -0.01), frameSize=(0, LEFT_W - 0.1, -0.03, 0.04), frameColor=BTN_BG,
-                             relief=DGG.FLAT, pos=(0.03, 0, -0.2 - i * 0.078), command=app.pick, extraArgs=[i])
+                             text_scale=0.026, text_align=TextNode.ALeft, text_fg=(0.92, 0.92, 0.95, 1),
+                             text_pos=(0.02, -0.008), frameSize=(0, LEFT_W - 0.1, -0.024, 0.034), frameColor=BTN_BG,
+                             relief=DGG.FLAT, pos=(0.03, 0, -0.18 - i * 0.064), command=app.pick, extraArgs=[i])
             self.q_buttons.append(b)
-        OnscreenText("Conversation", parent=left, pos=(0.04, -0.79), scale=0.03, fg=GREY, font=f,
+        OnscreenText("model architecture", parent=left, pos=(0.04, -0.64), scale=0.026, fg=GREY, font=f,
                      align=TextNode.ALeft)
-        self.chat_text = OnscreenText("", parent=left, pos=(0.04, -0.85), scale=0.026, fg=(0.9, 0.9, 0.93, 1),
-                                      font=f, align=TextNode.ALeft, wordwrap=23, mayChange=True)
+        self.arch = ArchMap(left, (0.36, 0, -0.73))
+        self.arch.root.setScale(0.83)
+        OnscreenText("Conversation", parent=app.a2dTopRight, pos=(-RIGHT_W + 0.04, -0.75), scale=0.028,
+                     fg=GREY, font=f, align=TextNode.ALeft)
+        self.chat_text = OnscreenText("", parent=app.a2dTopRight, pos=(-RIGHT_W + 0.04, -0.8), scale=0.024,
+                                      fg=(0.9, 0.9, 0.93, 1), font=f, align=TextNode.ALeft, wordwrap=19.5,
+                                      mayChange=True)
         self.chat_lines = []
         # ---- top: stage chips
         self.chips = []
@@ -151,9 +157,9 @@ class UI:
         for i, (key, label, cmd) in enumerate(specs):
             b = DirectButton(parent=app.a2dTopRight, text=label, text_font=f, text_scale=0.028,
                              text_fg=(1, 1, 1, 1), text_pos=(0, -0.01),
-                             frameSize=(-0.19, 0.19, -0.03, 0.04),
+                             frameSize=(-0.23, 0.23, -0.03, 0.04),
                              frameColor=(0.2, 0.32, 0.5, 0.95) if key == "next" else BTN_BG,
-                             relief=DGG.FLAT, pos=(-0.22, 0, -0.07 - i * 0.082), command=cmd)
+                             relief=DGG.FLAT, pos=(-0.27, 0, -0.07 - i * 0.082), command=cmd)
             self.btn[key] = b
         # ---- bottom: caption (the explanation, like video subtitles)
         self.caption = OnscreenText("", pos=(0, -0.79), scale=0.04, fg=WHITE, bg=(0, 0, 0, 0.62),
@@ -275,6 +281,8 @@ class App(ShowBase):
             return
         self.idx += 1
         st = self.steps[self.idx]
+        default_map = {"Context": ("input",), "Tokens": ("input",), "Output": ("linear", "softmax", "output")}
+        self.ui.arch.highlight(*default_map.get(st.stage, ()))
         caption, ival = st.build()
         self.ui.set_stage(st.stage)
         self.ui.set_caption(caption)

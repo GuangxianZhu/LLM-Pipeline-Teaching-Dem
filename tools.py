@@ -110,10 +110,17 @@ def _fig_to_rgba(fig):
     return arr
 
 
-def _save(arr, kind):
+def _slug(s):
+    out = "".join(c if c.isalnum() else "_" for c in s.lower())
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out.strip("_")[:30] or "out"
+
+
+def _save(arr, kind, name=None):
     os.makedirs(OUT_DIR, exist_ok=True)
     _counter[kind] += 1
-    name = "{}_{}.png".format(kind, _counter[kind])
+    name = "{}.png".format(_slug(name)) if name else "{}_{}.png".format(kind, _counter[kind])
     path = os.path.join(OUT_DIR, name)
     plt.imsave(path, arr)
     return "outputs/" + name
@@ -171,7 +178,7 @@ def plot_chart(type, title, labels=None, values=None, source=None, minutes=60):
     ax.set_title(title, color=INK, fontsize=11, loc="left")
     fig.tight_layout()
     arr = _fig_to_rgba(fig)
-    path = _save(arr, "chart")
+    path = _save(arr, "chart", title)
     args = "type={!r}, title={!r}".format(type, title)
     return dict(kind="image", image=arr, path=path, stats=stats,
                 text="Chart saved to {} ({})".format(path, summary),
@@ -228,7 +235,7 @@ def generate_image(prompt, size="256x256"):
         return {"kind": "text", "text": "ERROR: matplotlib is not installed",
                 "screen": "pip install matplotlib", "python": "generate_image(...)"}
     arr = _draw_cat()
-    path = _save(arr, "image")
+    path = _save(arr, "image", "cat_image")
     return dict(kind="image", image=arr, path=path, diffusion=True,
                 text="Image saved to {}".format(path),
                 screen="saved " + path,
