@@ -28,6 +28,9 @@ setup(
                 "README.md",
             ],
             "exclude_patterns": ["legacy_factory/**", "outputs/**", "**/__pycache__/**"],
+            # modules that numpy's C code imports by itself (the freezer cannot see those imports)
+            "include_modules": {"*": ["numpy._core.*", "numpy._utils.*", "numpy.exceptions", "numpy.dtypes",
+                                      "numpy._globals"]},
             "exclude_modules": {"*": ["torch", "tkinter", "IPython", "pytest", "setuptools", "pip"]},
             "plugins": ["pandagl", "p3openal_audio"],
             # errors are written here (the window has no console)

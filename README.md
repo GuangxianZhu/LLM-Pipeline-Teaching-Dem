@@ -17,18 +17,17 @@ python main.py
 Only `panda3d`, `numpy` and `matplotlib` are needed. Works offline. Each student runs it on their own
 computer (Windows / macOS / Linux).
 
-## Windows version for students (no Python needed)
+## Windows: one-click start (for students)
 
-Give students `dist/LLMPipelineDemo-win64.zip`: unzip, double-click `LLMPipelineDemo.exe`
-(see `HOW TO RUN.txt` inside). To rebuild it after changing the code (works on Windows, macOS or Linux):
+1. Install Python 3.9 or newer from https://www.python.org/downloads/ (tick **"Add python.exe to PATH"**).
+2. Download this project (GitHub: **Code → Download ZIP**) and unzip it.
+3. Double-click **`run_windows.bat`**.
 
-```
-pip install panda3d
-python build_windows.py          # -> build/win_amd64/  and  dist/LLMPipelineDemo-win64.zip
-```
+The first start installs panda3d, numpy and matplotlib into a private `.venv` folder inside the project
+(needs internet, 1–3 minutes). After that it starts right away and works offline. If anything goes wrong,
+the black window shows the error and waits. To reinstall, delete the `.venv` folder.
 
-`LLMPipelineDemo.exe --selftest` plays every question quickly and reports PASSED / FAILED.
-Errors of the .exe go to `%LOCALAPPDATA%\LLMPipelineDemo\output.log`.
+(`setup.py` / `build_windows.py` are an unfinished attempt at a stand-alone .exe; not needed.)
 
 ## Controls
 
