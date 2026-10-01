@@ -46,32 +46,37 @@ the black window shows the error and waits. To reinstall, delete the `.venv` fol
 
 ## How to follow the data
 
-* **The highway.** Every token is one column of 32 numbers (red = positive, blue = negative). This row of
-  columns — the *residual stream* — travels to the right along the top of the board. At each station a
-  computation unfolds below it, and its result rises back up into the stream.
-* **The yellow column** is the last token, `<ai>`. Its column is the one that finally predicts the next token,
-  so it is framed in yellow at every station.
-* **The tracker** (bottom right) always shows `<ai>`'s current 32 numbers, where it is now, and the path so far.
-* **The architecture map** (left) lights up the block being shown (classic GPT / decoder-only diagram).
-* All highway vectors share one colour scale, so the same number always has the same colour.
+The plan of the whole flow is `docs/flow.drawio` (open it in draw.io / diagrams.net; `docs/flow.png` is a preview).
+
+* **One fixed strip, left to right.** The inside of the Transformer is laid out once, like the drawing:
+  embedding -> + position -> Q, K, V -> scores -> weights -> mix -> head 2 -> concat · W_O -> add & norm ->
+  feed forward -> add & norm -> layer 2 -> output. Nothing moves away; every result stays where it was made
+  and the camera travels along. The strip is first shown as an empty map, then filled in step by step.
+* **Every token is a ROW of numbers** (red = positive, blue = negative), in the same order everywhere.
+  The last row is always `<ai>` (yellow frame): the row that finally predicts the next token.
+* **Every "· W" is an ordinary matrix multiplication**, with the shapes written next to it. One number is
+  worked out in detail (a row of X times a column of W_Q); Q · Kᵀ is drawn with Kᵀ on top of the table.
+* **The red lines are the residual connections**: a copy of X travels over the attention block and is added back.
+* **The tracker** (bottom right) shows `<ai>`'s current 32 numbers; **the architecture map** (left) lights up
+  the block being shown.
 
 ## The story
 
 1. **Context** – hidden system prompt + your message, as one sequence
 2. **Tokens** – text cut into tokens with IDs
-3. **Embedding** – each ID picks its row in the embedding table (181 × 32) → the highway starts
-4. **Positional encoding** – a fixed wave pattern is added to every column
-5. **Attention, head 1** – columns drop into W_Q, W_K, W_V → Q, K, V (13 × 16)
-6. **Scores** – Q·K table → ÷√16 → mask (no looking ahead) → softmax weights
-7. **Weighted sum** – V columns × `<ai>`'s weights, added up → head output
-8. **Head 2** – the same steps with its own matrices
-9. **Concat × W_O** → ΔE, the change every token wants to make
-10. **Add** – ΔE rises into the highway (plus a 3D view where every arrow moves at once)
-11. **Norm** – mean 0, spread 1, then learned gain and bias (shown as bars)
-12. **Feed forward** – 32 → 128 neurons → ReLU → 32, the same network for every token
-13. **Add & Norm** – layer 1 done
-14. **Layer 2** – the same again with its own matrices
-15. **Output** – only `<ai>`'s column × W_out → 181 scores → softmax → next token
+3. **Embedding** – the map of the whole strip, then each ID picks its row of the table (181 × 32) -> E
+4. **Position** – X = E + P
+5. **Q K V** – X · W_Q = Q, X · W_K = K, X · W_V = V (one number worked out)
+6. **Scores** – Q · Kᵀ, ÷ √16, mask
+7. **Weights** – softmax per row
+8. **Mix** – A · V: <ai>'s row becomes a weighted sum of the V rows
+9. **Head 2** – the same with its own matrices
+10. **Concat · W_O** -> ΔX
+11. **Add & norm** – X + ΔX (residual), normalized -> X1
+12. **Feed forward** – X1 · W1, ReLU, · W2 -> F
+13. **Add & norm** -> X2 (layer 1 output)
+14. **Layer 2** – the same once more -> X3
+15. **Output** – only <ai>'s row · W_out -> 181 scores -> softmax -> next token
 16. **Loop / tool / answer** – the token is appended and the model runs again; when it writes a
     `<tool_call>`, the program runs the real tool, appends the result, and the model continues
 
@@ -118,7 +123,8 @@ the black window shows the error and waits. To reinstall, delete the `.venv` fol
 |---|---|
 | `main.py` | window, panels (questions, architecture map, conversation, tracker), camera, step player |
 | `story.py` | turns a question into animated steps + captions (context, tokens, prediction loop, tools) |
-| `tf_steps.py` | inside the Transformer: the highway and every station, with the real numbers |
+| `tf_steps.py` | inside the Transformer: the fixed left-to-right strip, with the real numbers |
+| `docs/` | `flow.drawio` / `flow.png`: the plan of the data flow (`make_flow.py` draws both) |
 | `archmap.py` | the GPT architecture map on the left |
 | `engine.py` | runs the whole conversation with the real model and the real tools |
 | `tiny/` | the tiny GPT: `model.py` (numpy inference + trace), `data.py`, `train.py`, weights, vocab |

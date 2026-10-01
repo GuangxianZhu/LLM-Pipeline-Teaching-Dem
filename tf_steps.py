@@ -1,32 +1,40 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
 """
-Inside the Transformer, as ONE CONTINUOUS FLOW of data, with the REAL numbers of the tiny model.
+Inside the Transformer as ONE FIXED DATA FLOW, left to right (the plan is docs/flow.drawio).
 
-The "residual stream" (one column of 32 numbers per token) travels to the right along a highway at the
-top of the board. At every station a computation unfolds BELOW the highway, and its result rises back up
-into the stream. The last token <ai> - the one whose column will predict the next token - is framed in
-yellow the whole way, and the tracker (bottom right) always shows its current 32 numbers.
+* Every token is a ROW of numbers (red = positive, blue = negative, dark = near 0).
+  The rows keep the same order everywhere, so the LAST row is always <ai> (yellow frame) - the row
+  that finally predicts the next token.
+* Every intermediate result stays where it was made. Nothing moves away; the camera travels.
+* The whole strip is drawn first as empty frames (the map). Each step fills in its part.
+* Every "x W" is an ordinary matrix multiplication, shown the way students learned it.
 
-All highway vectors share ONE colour scale, so the same numbers always have the same colour.
-Red = positive, blue = negative, dark = near zero.
+All numbers are the real numbers of the tiny trained model (tiny/).
 """
 import numpy as np
-from direct.interval.IntervalGlobal import (Func, LerpColorScaleInterval, LerpFunc, LerpPosInterval,
-                                            LerpScaleInterval, Parallel, Sequence, Wait)
-from panda3d.core import Point3, TextNode, Vec3
+from direct.interval.IntervalGlobal import (Func, LerpColorScaleInterval, LerpFunc, LerpHprInterval,
+                                            LerpPosInterval, Parallel, Sequence, Wait)
+from panda3d.core import Point3, TextNode
 
-from kit import (BLUE, DIM, GREEN, GREY, ORANGE, RED, TOKEN_COLORS, WHITE, YELLOW, Arrow, Fonts, disc,
-                 fade_in, fade_out, fill, heatmap, lines, rect, shape_label, text, token_box, value_color, vlabel)
+from kit import (BLUE, GREY, ORANGE, TOKEN_COLORS, WHITE, YELLOW, Fonts, arrow2d, disc, fade_in, fade_out, fill,
+                 heatmap, lines, rect, text)
 
-CS = 0.95              # spacing between token columns
-CH = 0.17              # cell height in a highway column (32 numbers)
-HDR_Z = 9.1            # token boxes above the highway
-HW_TOP = 8.3           # top of the highway columns
+FX = 40.0              # world x where the strip starts
+RH = 0.62              # row pitch (one token)
+GAPZ = 0.30            # gap between rows (fraction)
+CD = 0.15              # width of one number in a 32/16-wide row
+CW = 0.075             # width of one number in a 128-wide row
+G = 2.0                # gap between stations
 SQ = "√"
-
-# stations along the highway (x of the highway centre)
-S_EMB, S_ATT, S_CAT, S_NORM, S_FFN, S_ADD2, S_L2, S_OUT = 44.0, 74.0, 132.0, 154.0, 180.0, 204.0, 230.0, 258.0
+FRAME = (0.30, 0.30, 0.34, 1)
+LINE = (0.62, 0.62, 0.68, 1)
+RESID = (0.85, 0.45, 0.42, 1)
+MAPTXT = (0.6, 0.6, 0.66, 1)
+MASKED = (0.30, 0.30, 0.34, 1)
+TS = 0.5               # name of a matrix
+TSH = 0.36             # its shape
+TN = 0.38              # notes
 
 
 def disp(t):
@@ -41,115 +49,143 @@ def sc_of(M):
     return max(1e-6, 1.6 * float(np.std(M)) if M.size else 1.0)
 
 
-def show_and_fade(node, dur=0.5):
+def show_fade(node, dur=0.4):
     return Sequence(Func(node.show), fade_in(node, dur))
 
 
-class Highway:
-    """The residual stream: a row of token columns that travels to the right."""
+def gray_color(v, scale=1.0):
+    """Attention weights: 0 = dark, 1 = white."""
+    b = 0.10 + 0.9 * min(1.0, max(0.0, v / scale))
+    return (b, b, b, 1)
 
-    def __init__(self, st, M, label, xc):
-        self.st = st
-        self.n = st.n
-        self.w = (self.n - 1) * CS
-        self.g = st.board.attachNewNode("highway")
-        self.g.setPos(xc - self.w / 2, 0, 0)
-        self.bot = HW_TOP - st.d * CH
-        self.hdr = st.header(self.g, 0, HDR_Z)
-        h = self.n - 1
-        self.hero = rect(self.g, h * CS - CS * 0.5, self.bot - 0.12, h * CS + CS * 0.5, HDR_Z + 0.42, YELLOW, 2.6,
-                         y=-0.03)
-        self.label = text(self.g, label, Point3(self.w / 2, 0, self.bot - 0.6), 0.36, GREY, Fonts.symbol)
-        self.cols = st.columns(self.g, M, 0, HW_TOP, scale=st.rs)
-        self.M = M
 
+class Box:
+    """Where one matrix lives on the board (top-left corner, cell sizes)."""
+
+    def __init__(self, x0, z_top, rows, cols, cw, rh):
+        self.x0, self.z_top, self.rows, self.cols, self.cw, self.rh = x0, z_top, rows, cols, cw, rh
+        self.w, self.h = cols * cw, rows * rh
+        self.x1, self.z_bot = x0 + self.w, z_top - self.h
+
+    def rz(self, i):
+        """centre z of row i"""
+        return self.z_top - (i + 0.5) * self.rh
+
+    def cx(self, j):
+        return self.x0 + (j + 0.5) * self.cw
+
+    @property
     def xc(self):
-        return self.g.getX() + self.w / 2
+        return (self.x0 + self.x1) / 2
 
-    def col_x(self, i):
-        """World x of column i's centre (at the highway's CURRENT position)."""
-        return self.g.getX() + i * CS
-
-    def morph(self, M, label, dur=0.6, stagger=0.04):
-        """Cross-fade every column to new values (same place). State switches at build time."""
-        new = self.st.columns(self.g, M, 0, HW_TOP, scale=self.st.rs)
-        old = self.cols
-        for c in new:
-            c.hide()
-        self.cols, self.M = new, M
-        par = Parallel(Func(self.label.node().setText, label))
-        for i, (a, b) in enumerate(zip(old, new)):
-            par.append(Sequence(Wait(i * stagger), Parallel(fade_out(a, dur), show_and_fade(b, dur)), Func(a.hide)))
-        return par
-
-    def move(self, xc, dur=1.6):
-        return LerpPosInterval(self.g, dur, Point3(xc - self.w / 2, 0, 0), blendType="easeInOut")
+    @property
+    def zc(self):
+        return (self.z_top + self.z_bot) / 2
 
 
 class TransformerSteps:
-    """Mixin for Story. Needs: self.board, self.view(), self.orbit(), self.engine, self.app."""
+    """Mixin for Story. Needs: self.board, self.view(), self.engine, self.app."""
 
-    # ------------------------------------------------------------ setup
+    # ================================================================== setup + layout
     def tf_setup(self):
         self.T = self.engine.trace_first()
         self.ttoks = self.T["tokens"]
-        self.n = len(self.ttoks)
+        self.n = n = len(self.ttoks)
         self.tcolor = [GREY if t.startswith("<") else TOKEN_COLORS[i % len(TOKEN_COLORS)]
                        for i, t in enumerate(self.ttoks)]
-        self.hi = self.n - 1                     # the hero: the last token, <ai>
+        self.hi = n - 1                             # the followed token: the last one, <ai>
         self.d = self.T["x0"].shape[1]
         self.dh = self.T["layers"][0]["heads"][0]["q"].shape[1]
+        self.ff = self.T["layers"][0]["hid"].shape[1]
         self.V = len(self.engine.m.vocab)
         stream = [self.T["emb"], self.T["x0"]] + [LT[k] for LT in self.T["layers"] for k in ("res1", "x1", "x_out")]
-        self.rs = sc_of(np.vstack(stream))       # ONE colour scale for everything on the highway
-        self.hw = None
-        self.hx = None                            # where the highway centre will be after the current step
-        self.g_embed = self.g_pos = self.g_att1 = self.g_head2 = self.g_concat = None
-        self.g_norm = self.g_ffn = self.g_add2 = self.g_l2 = None
+        self.rs = sc_of(np.vstack(stream))          # ONE colour scale for all 32-wide token rows
+        self.tf_root = None
+        self.persist = []
+        self._layout()
 
-    # ------------------------------------------------------------ helpers
-    def header(self, parent, x0, z, scale=0.25):
-        g = parent.attachNewNode("hdr")
-        for i, t in enumerate(self.ttoks):
-            token_box(g, disp(t), self.tcolor[i], (x0 + i * CS, 0, z), scale)
-        g.flattenStrong()
-        return g
+    def _layout(self):
+        n, d, dh, ff = self.n, self.d, self.dh, self.ff
+        SH = n * RH
+        self.SH = SH
+        L = {}
+        zm = 0.0                                    # main lane (the residual stream)
+        zq = SH + 4.2                               # Q lane (above)
+        zv = -(SH + 3.6)                            # V lane (below)
+        zh2 = zv - SH - 4.4                         # head 2 lane
+        self.zm, self.zq, self.zv, self.zh2 = zm, zq, zv, zh2
+        x = FX
+        L["words_x"] = x + 1.6                      # right edge of the token words
+        L["ids_x"] = x + 2.4
+        L["table"] = Box(x + 3.4, zm + 2.2, self.V, d, CW, (SH + 4.4) / self.V)
+        x = L["table"].x1 + G
+        L["E"] = Box(x, zm, n, d, CD, RH)
+        L["plus0"] = (L["E"].x1 + 1.4, L["E"].zc)
+        L["P"] = Box(L["plus0"][0] - d * CD / 2, zm - SH - 2.4, n, d, CD, RH)
+        L["X"] = Box(L["E"].x1 + 2.8, zm, n, d, CD, RH)
+        fan = L["X"].x1 + 1.2
+        L["fan"] = fan
+        wx = fan + 1.2
+        for nm, zt in (("Q", zq), ("K", zm), ("V", zv)):
+            zc = zt - SH / 2
+            L["W" + nm] = Box(wx, zc + d * CD / 2, d, dh, CD, CD)
+        sx = L["WQ"].x1 + 1.8
+        for nm, zt in (("Q", zq), ("K", zm), ("V", zv)):
+            L[nm] = Box(sx, zt, n, dh, CD, RH)
+        gx = L["Q"].x1 + 0.9
+        L["S"] = Box(gx, zq, n, n, RH, RH)                          # rows = queries, columns = keys
+        L["KT"] = Box(gx, zq + 0.6 + dh * CD, dh, n, RH, CD)        # K transposed, above the table
+        L["A"] = Box(L["S"].x1 + 7.8, zq, n, n, RH, RH)            # notes about the scores go in between
+        L["mix"] = L["A"].x0 + 0.9                                    # x of the weights column (V lane)
+        L["Vc"] = Box(L["A"].x0 + 1.7, zv, n, dh, CD, RH)            # V copies being mixed
+        L["O1"] = Box(max(L["A"].x1, L["Vc"].x1) + 2.2, zv, n, dh, CD, RH)
+        # head 2 (compact lane)
+        c2 = 0.06
+        L["W2"] = Box(wx, zh2 - SH / 2 + 1.2, 1, 1, 2.4, 2.4)        # just a labelled box
+        L["Q2"] = Box(sx - 0.5, zh2, n, dh, c2, RH)
+        L["K2"] = Box(L["Q2"].x1 + 0.25, zh2, n, dh, c2, RH)
+        L["V2"] = Box(L["K2"].x1 + 0.25, zh2, n, dh, c2, RH)
+        L["S2"] = Box(gx, zh2, n, n, RH, RH)
+        L["A2"] = Box(L["A"].x0, zh2, n, n, RH, RH)
+        L["O2"] = Box(L["O1"].x0, zh2, n, dh, CD, RH)
+        # concat, W_O, delta
+        L["C"] = Box(L["O1"].x1 + 2.6, zm, n, d, CD, RH)
+        L["WO"] = Box(L["C"].x1 + 1.6, L["C"].zc + d * CD / 2, d, d, CD, CD)
+        L["D"] = Box(L["WO"].x1 + 1.6, zm, n, d, CD, RH)
+        L["plus1"] = (L["D"].x1 + 1.3, L["D"].zc)
+        L["norm1"] = (L["plus1"][0] + 1.7, L["D"].zc)
+        L["X1"] = Box(L["norm1"][0] + 1.6, zm, n, d, CD, RH)
+        # feed forward
+        L["W1"] = Box(L["X1"].x1 + 1.6, L["X1"].zc + d * CD / 2, d, ff, CW, CD)
+        L["H"] = Box(L["W1"].x1 + 1.6, zm, n, ff, CW, RH)
+        L["W2f"] = Box(L["H"].x1 + 1.6, L["H"].zc + ff * CW / 2, ff, d, CD, CW)
+        L["F"] = Box(L["W2f"].x1 + 1.6, zm, n, d, CD, RH)
+        L["plus2"] = (L["F"].x1 + 1.3, L["F"].zc)
+        L["norm2"] = (L["plus2"][0] + 1.7, L["F"].zc)
+        L["X2"] = Box(L["norm2"][0] + 1.6, zm, n, d, CD, RH)
+        # layer 2 (one box) and its output
+        L["L2"] = (L["X2"].x1 + 1.6, L["X2"].x1 + 8.6)
+        L["X3"] = Box(L["L2"][1] + 1.6, zm, n, d, CD, RH)
+        # output: only the <ai> row
+        hz = L["X3"].z_top - (n - 1) * RH
+        L["row"] = Box(L["X3"].x1 + 2.0, hz, 1, d, CD, RH)
+        L["WOUT"] = Box(L["row"].x1 + 1.6, L["row"].zc + d * CD / 2, d, self.V, 0.06, CD)
+        L["logit"] = Box(L["WOUT"].x1 + 1.6, hz, 1, self.V, 0.06, RH)
+        L["probs_x"] = L["logit"].x1 + 4.0
+        L["end_x"] = L["probs_x"] + 9.0
+        self.L = L
+        self.top_z = zq + 0.6 + dh * CD + 2.2
+        self.bot_z = zh2 - SH - 1.4
 
-    def columns(self, parent, M, x0, z_top, ch=CH, scale=None, cs=CS):
-        """One heatmap column per token (M is n x dim). Returns list of nodes."""
-        scale = scale or sc_of(M)
-        return [heatmap(parent, M[i:i + 1].T, x0 + i * cs - cs * 0.4, z_top, cs * 0.8, ch, scale, gap=0.1)
-                for i in range(M.shape[0])]
+    # ================================================================== drawing helpers
+    def root(self):
+        if self.tf_root is None:
+            self.tf_root = self.board.attachNewNode("transformer")
+        return self.tf_root
 
-    def frame(self, parent, x0, z_top, ncols, nrows, cs, ch, color=DIM):
-        return rect(parent, x0 - cs * 0.5, z_top - nrows * ch - 0.08, x0 + (ncols - 0.5) * cs, z_top + 0.08, color, 1.2)
-
-    def matrix(self, parent, M, x0, z_top, cw, ch, label=None, shape=None, scale=None, color=WHITE):
-        g = parent.attachNewNode("mat")
-        heatmap(g, M, x0, z_top, cw, ch, scale or sc_of(M), gap=0.08)
-        R, C = M.shape
-        rect(g, x0 - 0.05, z_top - R * ch - 0.05, x0 + C * cw + 0.05, z_top + 0.05, DIM, 1.2)
-        if label:
-            text(g, label, Point3(x0 + C * cw / 2, 0, z_top + 0.35), 0.4, color, Fonts.symbol)
-        if shape:
-            shape_label(g, shape, Point3(x0 + C * cw / 2, 0, z_top - R * ch - 0.5), 0.3)
-        return g
-
-    def sweep(self, nodes, total=1.2):
-        gap = total / max(1, len(nodes))
-        return Parallel(*[Sequence(Wait(i * gap), show_and_fade(nd, 0.3)) for i, nd in enumerate(nodes)])
-
-    def hide_all(self, nodes):
-        for nd in nodes:
-            nd.hide()
-
-    def dim(self, *groups):
-        """An earlier station stays visible as a dark trail, so it does not compete with the current one."""
-        return Parallel(*[LerpColorScaleInterval(g, 0.6, (0.22, 0.22, 0.25, 1)) for g in groups if g])
-
-    def retire(self, *groups):
-        """Fade an earlier station out completely (when it would overlap the current one)."""
-        return Parallel(*[Sequence(fade_out(g, 0.5), Func(g.hide)) for g in groups if g])
+    def keep(self, node):
+        self.persist.append(node)
+        return node
 
     def mapkey(self, *keys):
         return Func(self.app.ui.arch.highlight, *keys)
@@ -157,674 +193,684 @@ class TransformerSteps:
     def track(self, vec, where):
         return Func(self.app.ui.track, disp(self.ttoks[self.hi]), vec, self.rs, where)
 
-    def top_attn(self, att, q, k=3):
-        idx = np.argsort(-att[q])[:k]
-        return ", ".join("'{}' {:.2f}".format(disp(self.ttoks[j]), att[q, j]) for j in idx)
+    def go(self, x0, x1, z0, z1, h=0.0, p=0.0):
+        """Camera so that the board rectangle x0..x1, z0..z1 is visible above the caption."""
+        w, hgt = x1 - x0, z1 - z0
+        d = max(w / 0.95, hgt / 0.66, 12.0)
+        return self.view(Point3((x0 + x1) / 2, 0, (z0 + z1) / 2 - 0.07 * d), h, p, d)
 
-    def fly(self, vec, x_from, z_from, ch_from, x_to, z_to, ch_to, dur=1.0, scale=None, cw=CS * 0.8, delay=0.0):
-        """A copy of one column (centre x, top z) flies from one place to another, changing its cell height."""
-        nd = heatmap(self.board, np.asarray(vec)[None, :].T, -cw / 2, 0, cw, ch_to, scale or self.rs, gap=0.1)
-        nd.setPos(x_from, 0, z_from)
-        nd.setSz(ch_from / ch_to)
+    def mat(self, M, box, scale=None, colors=None, hero=True, gapx=0.08, parent=None, nan=(0.04, 0.04, 0.05, 1)):
+        """Heatmap of M in box (rows = tokens). Hidden. Hero row framed."""
+        g = (parent or self.root()).attachNewNode("mat")
+        heatmap(g, M, box.x0, box.z_top, box.cw, box.rh, scale or sc_of(M), gap=GAPZ if box.rh == RH else 0.06,
+                gapx=gapx, colors=colors, nan_color=nan)
+        if hero and box.rows == self.n:
+            z = box.rz(self.hi)
+            rect(g, box.x0 - 0.08, z - RH / 2 + 0.02, box.x1 + 0.08, z + RH / 2 - 0.02, YELLOW, 2.4, y=-0.02)
+        g.hide()
+        return g
+
+    def frame(self, parent, box, label=None, shape=None):
+        rect(parent, box.x0 - 0.1, box.z_bot - 0.06, box.x1 + 0.1, box.z_top + 0.06, FRAME, 1.2)
+        if label:
+            z = box.z_bot - 0.65
+            text(parent, label, Point3(box.xc, 0, z), TS, MAPTXT, Fonts.symbol)
+            if shape:
+                text(parent, shape, Point3(box.xc, 0, z - 0.5), TSH, (0.5, 0.5, 0.56, 1), Fonts.symbol)
+
+    def row_node(self, vec, cw, scale=None, colors=None, ai=True):
+        """One token row (1 x k) with its top-left corner at the node origin. Hidden."""
+        nd = self.board.attachNewNode("row")
+        heatmap(nd, np.asarray(vec)[None, :], 0, 0, cw, RH, scale or self.rs, gap=GAPZ, gapx=0.08, colors=colors)
+        if ai:
+            rect(nd, -0.08, -RH + 0.02, len(vec) * cw + 0.08, -0.02, YELLOW, 2.4, y=-0.02)
         nd.hide()
-        return nd, Sequence(Wait(delay), Func(nd.show),
-                            Parallel(LerpPosInterval(nd, dur, Point3(x_to, 0, z_to), blendType="easeInOut"),
-                                     LerpScaleInterval(nd, dur, Vec3(1, 1, 1), blendType="easeInOut")))
+        return nd
 
-    def hero_x(self, station):
-        """World x of the <ai> column when the highway stands at `station`."""
-        return station - (self.n - 1) * CS / 2 + self.hi * CS
+    def fly(self, nd, frm, to, dur=0.9, delay=0.0, hide_end=True):
+        nd.setPos(*frm)
+        s = Sequence(Wait(delay), Func(nd.setPos, *frm), Func(nd.show),
+                     LerpPosInterval(nd, dur, Point3(*to), blendType="easeInOut"))
+        if hide_end:
+            s.append(Func(nd.hide))
+        return s
 
-    def go(self, x, z=3.0, d=26.0, h=0.0, p=0.0):
-        return self.view(Point3(x, 0, z), h, p, d)
+    def sweep(self, nodes, total=0.8):
+        gap = total / max(1, len(nodes))
+        return Parallel(*[Sequence(Wait(i * gap), show_fade(nd, 0.25)) for i, nd in enumerate(nodes)])
 
-    def move_hw(self, xc, dur=1.6):
-        """Move the highway to a new station and let the camera follow it."""
-        self.hx = xc
-        return Parallel(self.hw.move(xc, dur), self.go(xc, 3.0, 26))
+    def rows_of(self, M, box, scale=None):
+        """Matrix drawn as separate row nodes (so they can appear one by one). All hidden, all kept."""
+        out = []
+        for i in range(self.n):
+            g = self.root().attachNewNode("r")
+            heatmap(g, M[i:i + 1], box.x0, box.z_top - i * box.rh, box.cw, box.rh, scale or sc_of(M), gap=GAPZ,
+                    gapx=0.08)
+            if i == self.hi:
+                z = box.rz(i)
+                rect(g, box.x0 - 0.08, z - RH / 2 + 0.02, box.x1 + 0.08, z + RH / 2 - 0.02, YELLOW, 2.4, y=-0.02)
+            g.hide()
+            out.append(self.keep(g))
+        return out
 
-    # ------------------------------------------------------------ 1 embedding
+    def ai_tag(self, box):
+        """small '<ai>' label left of the hero row (hidden, kept)"""
+        t = text(self.root(), "<ai>", Point3(box.x0 - 0.2, 0, box.rz(self.hi) - 0.11), 0.32, YELLOW,
+                 align=TextNode.ARight)
+        t.hide()
+        return self.keep(t)
+
+    def note(self, s, x, z, scale=TN, color=GREY, align=TextNode.ALeft):
+        g = self.root().attachNewNode("note")
+        text(g, s, Point3(x, 0, z), scale, color, Fonts.symbol, align=align)
+        g.hide()
+        return self.keep(g)
+
+    def top_attn(self, att, k=3):
+        idx = np.argsort(-att[self.hi])[:k]
+        return ", ".join("'{}' {:.2f}".format(disp(self.ttoks[j]), att[self.hi, j]) for j in idx)
+
+    # ================================================================== 0 the map (empty frames)
+    def build_map(self):
+        """Draw the whole strip as empty frames + names + connectors: the map of the journey."""
+        L, n = self.L, self.n
+        g = self.root().attachNewNode("map")
+        d, dh, ff = self.d, self.dh, self.ff
+        sh = lambda a, b: "{} × {}".format(a, b)  # noqa: E731
+        for key, lab, shp in (("E", "E", sh(n, d)), ("P", "P  (position)", sh(n, d)), ("X", "X", sh(n, d)),
+                              ("Q", "Q", sh(n, dh)), ("K", "K", sh(n, dh)), ("V", "V", sh(n, dh)),
+                              ("S", "scores", sh(n, n)), ("A", "weights A", sh(n, n)), ("O1", "head 1 out", sh(n, dh)),
+                              ("S2", "scores (head 2)", None), ("A2", "weights (head 2)", None),
+                              ("O2", "head 2 out", sh(n, dh)), ("C", "concat", sh(n, d)), ("D", "ΔX  (change)", sh(n, d)),
+                              ("X1", "X1", sh(n, d)), ("H", "hidden", sh(n, ff)), ("F", "F", sh(n, d)),
+                              ("X2", "X2  (layer 1 out)", sh(n, d)), ("X3", "X3  (final)", sh(n, d))):
+            self.frame(g, L[key], label=lab, shape=shp)
+        for key, lab, shp in (("WQ", "W_Q", sh(d, dh)), ("WK", "W_K", sh(d, dh)), ("WV", "W_V", sh(d, dh)),
+                              ("WO", "W_O", sh(d, d)), ("W1", "W1", sh(d, ff)), ("W2f", "W2", sh(ff, d)),
+                              ("WOUT", "W_out", sh(d, self.V))):
+            b = L[key]
+            fill(g, b.x0, b.z_bot, b.x1, b.z_top, (0.35, 0.5, 0.85, 1), 0.10)
+            rect(g, b.x0, b.z_bot, b.x1, b.z_top, (0.45, 0.6, 0.95, 1), 1.2)
+            text(g, lab, Point3(b.xc, 0, b.z_bot - 0.65), TS, (0.55, 0.68, 1.0, 1), Fonts.symbol)
+            text(g, shp, Point3(b.xc, 0, b.z_bot - 1.15), TSH, (0.5, 0.56, 0.72, 1), Fonts.symbol)
+        for key in ("Q2", "K2", "V2"):
+            self.frame(g, L[key])
+        text(g, "Q2  K2  V2", Point3(L["K2"].xc, 0, L["Q2"].z_bot - 0.55), 0.32, MAPTXT)
+        b = L["W2"]
+        rect(g, b.x0, b.z_bot, b.x1, b.z_top, (0.45, 0.6, 0.95, 1), 1.2)
+        text(g, "× its own\nW_Q, W_K, W_V", Point3(b.xc, 0, b.zc + 0.2), 0.28, (0.55, 0.68, 1.0, 1), Fonts.symbol)
+        text(g, "head 2", Point3(b.x0, 0, L["S2"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
+        text(g, "head 1", Point3(L["WQ"].x0, 0, L["Q"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
+        self.frame(g, L["table"])
+        text(g, "embedding table", Point3(L["table"].xc, 0, L["table"].z_bot - 0.5), 0.36, MAPTXT)
+        text(g, sh(self.V, d), Point3(L["table"].xc, 0, L["table"].z_bot - 0.9), 0.26, (0.45, 0.45, 0.5, 1),
+             Fonts.symbol)
+        for key in ("row", "logit"):
+            self.frame(g, L[key])
+        for key in ("plus0", "plus1", "plus2"):
+            cx, cz = L[key]
+            disc(g, 0.42, (0.18, 0.18, 0.2, 1), 24).setPos(cx, 0.01, cz)
+            text(g, "+", Point3(cx, 0, cz - 0.17), 0.55, WHITE)
+        for key in ("norm1", "norm2"):
+            cx, cz = L[key]
+            rect(g, cx - 0.7, cz - 0.38, cx + 0.7, cz + 0.38, LINE, 1.2)
+            text(g, "norm", Point3(cx, 0, cz - 0.12), 0.32, WHITE)
+        x0, x1 = L["L2"]
+        zc = L["X2"].zc
+        rect(g, x0, zc - 3.0, x1, zc + 3.0, (0.45, 0.75, 0.45, 1), 1.6)
+        text(g, "layer 2", Point3((x0 + x1) / 2, 0, zc + 1.6), 0.5, (0.6, 0.9, 0.6, 1))
+        text(g, "the same steps again\n(attention, add & norm,\nfeed forward, add & norm)\nwith its own weights",
+             Point3((x0 + x1) / 2, 0, zc + 0.7), 0.27, GREY)
+        lx0, lx1 = L["fan"] - 0.4, L["X2"].x1 + 0.6
+        rect(g, lx0, self.bot_z + 0.3, lx1, self.top_z - 0.3, (0.3, 0.5, 0.3, 1), 1.0)
+        text(g, "layer 1", Point3(lx0 + 0.3, 0, self.top_z - 0.9), 0.45, (0.5, 0.8, 0.5, 1), align=TextNode.ALeft)
+        text(g, "ATTENTION", Point3(L["S"].x0, 0, self.top_z - 0.9), 0.45, MAPTXT, align=TextNode.ALeft)
+        text(g, "FEED FORWARD", Point3(L["W1"].x0, 0, L["W1"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
+        text(g, "OUTPUT", Point3(L["row"].x0, 0, L["WOUT"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
+        self._connectors(g)
+        g.hide()
+        return g
+
+    def _connectors(self, g):
+        """Thin arrows of the flow (grey) and the two residual lines (red)."""
+        L, zc = self.L, self.L["X"].zc
+        segs = []
+        a = lambda p0, p1, c=LINE: arrow2d(g, (p0[0], 0, p0[1]), (p1[0], 0, p1[1]), c, 1.4, 0.16)  # noqa: E731
+        a((L["table"].x1 + 0.2, zc), (L["E"].x0 - 0.2, zc))
+        a((L["E"].x1 + 0.2, zc), (L["plus0"][0] - 0.5, zc))
+        a((L["plus0"][0], L["P"].z_top + 0.15), (L["plus0"][0], zc - 0.5))
+        a((L["plus0"][0] + 0.5, zc), (L["X"].x0 - 0.2, zc))
+        f = L["fan"]
+        segs += [[(L["X"].x1 + 0.15, 0, zc), (f, 0, zc)], [(f, 0, L["Q"].zc), (f, 0, L["W2"].zc)]]
+        for k in ("Q", "K", "V"):
+            a((f, L[k].zc), (L["W" + k].x0 - 0.15, L[k].zc))
+            a((L["W" + k].x1 + 0.15, L[k].zc), (L[k].x0 - 0.2, L[k].zc))
+        a((f, L["W2"].zc), (L["W2"].x0 - 0.15, L["W2"].zc))
+        a((L["W2"].x1 + 0.15, L["W2"].zc), (L["Q2"].x0 - 0.2, L["W2"].zc))
+        a((L["V2"].x1 + 0.15, L["S2"].zc), (L["S2"].x0 - 0.2, L["S2"].zc))
+        a((L["S"].x1 + 0.2, L["S"].rz(self.hi)), (L["A"].x0 - 0.2, L["S"].rz(self.hi)))
+        a((L["S2"].x1 + 0.2, L["S2"].zc), (L["A2"].x0 - 0.2, L["S2"].zc))
+        kx = L["KT"].x0 - 0.5
+        segs += [[(L["K"].x1 + 0.2, 0, L["K"].zc), (kx, 0, L["K"].zc)], [(kx, 0, L["K"].zc), (kx, 0, L["KT"].zc)]]
+        a((kx, L["KT"].zc), (L["KT"].x0 - 0.15, L["KT"].zc))
+        a((L["Vc"].x1 + 0.2, L["O1"].zc), (L["O1"].x0 - 0.2, L["O1"].zc))
+        a((L["A2"].x1 + 0.2, L["O2"].zc), (L["O2"].x0 - 0.2, L["O2"].zc))
+        a((L["A"].xc, L["A"].z_bot - 1.6), (L["A"].xc, L["Vc"].z_top + 0.3))
+        a((L["V"].x1 + 0.2, L["V"].zc), (L["mix"] - 0.6, L["V"].zc))
+        cx = L["C"].x0 - 1.0
+        segs += [[(L["O1"].x1 + 0.2, 0, L["O1"].zc), (cx, 0, L["O1"].zc)],
+                 [(L["O2"].x1 + 0.2, 0, L["O2"].zc), (cx, 0, L["O2"].zc)], [(cx, 0, L["O2"].zc), (cx, 0, zc)]]
+        a((cx, zc), (L["C"].x0 - 0.2, zc))
+        for p, q in (("C", "WO"), ("WO", "D"), ("X1", "W1"), ("W1", "H"), ("H", "W2f"), ("W2f", "F")):
+            a((L[p].x1 + 0.2, zc), (L[q].x0 - 0.2, zc))
+        a((L["D"].x1 + 0.2, zc), (L["plus1"][0] - 0.5, zc))
+        a((L["plus1"][0] + 0.5, zc), (L["norm1"][0] - 0.75, zc))
+        a((L["norm1"][0] + 0.75, zc), (L["X1"].x0 - 0.2, zc))
+        a((L["F"].x1 + 0.2, zc), (L["plus2"][0] - 0.5, zc))
+        a((L["plus2"][0] + 0.5, zc), (L["norm2"][0] - 0.75, zc))
+        a((L["norm2"][0] + 0.75, zc), (L["X2"].x0 - 0.2, zc))
+        a((L["X2"].x1 + 0.2, zc), (L["L2"][0] - 0.1, zc))
+        a((L["L2"][1] + 0.1, zc), (L["X3"].x0 - 0.2, zc))
+        a((L["X3"].x1 + 0.2, L["row"].zc), (L["row"].x0 - 0.2, L["row"].zc), YELLOW)
+        a((L["row"].x1 + 0.2, L["row"].zc), (L["WOUT"].x0 - 0.2, L["row"].zc))
+        a((L["WOUT"].x1 + 0.2, L["row"].zc), (L["logit"].x0 - 0.2, L["row"].zc))
+        a((L["logit"].x1 + 0.2, L["row"].zc), (L["probs_x"] - 2.6, L["row"].zc))
+        lines(g, segs, LINE, 1.4)
+        # residual lines: X jumps over attention, X1 jumps over feed forward
+        r1 = self.top_z - 0.2
+        rx = L["X"].xc
+        lines(g, [[(rx, 0, L["X"].z_top + 0.1), (rx, 0, r1), (L["plus1"][0], 0, r1)]], RESID, 1.8)
+        arrow2d(g, (L["plus1"][0], 0, r1), (L["plus1"][0], 0, L["plus1"][1] + 0.48), RESID, 1.8, 0.18)
+        text(g, "residual: X skips attention and is ADDED back", Point3((rx + L["plus1"][0]) / 2, 0, r1 + 0.25),
+             0.34, RESID)
+        r2 = L["W2f"].z_top + 0.8
+        x1c = L["X1"].xc
+        lines(g, [[(x1c, 0, L["X1"].z_top + 0.1), (x1c, 0, r2), (L["plus2"][0], 0, r2)]], RESID, 1.8)
+        arrow2d(g, (L["plus2"][0], 0, r2), (L["plus2"][0], 0, L["plus2"][1] + 0.48), RESID, 1.8, 0.18)
+        text(g, "residual: X1 skips feed forward", Point3((x1c + L["plus2"][0]) / 2, 0, r2 + 0.25), 0.34, RESID)
+        self.res_z = (r1, r2)
+
+    def overview(self):
+        return self.go(FX - 1.0, self.L["end_x"], self.bot_z, self.top_z)
+
+    # ================================================================== 1 embedding
     def s_embed(self):
-        x = S_EMB
+        L, n, T = self.L, self.n, self.T
+        r = self.root()
+        g_map = self.keep(self.build_map())
         E = self.engine.m.w["E"]
-        ids = self.T["ids"]
-        g = self.board.attachNewNode("embed")
-        self.g_embed = g
-        self.hw = Highway(self, self.T["emb"], "token embeddings  ({} x {})".format(self.n, self.d), x)
-        self.hx = x
-        hw = self.hw
-        for nd in [hw.hdr, hw.hero, hw.label] + hw.cols:
-            nd.hide()
-        ex0, ez0, ecw, ech = x - 13.6, HW_TOP + 0.4, 0.09, 0.05
-        tab = self.matrix(g, E, ex0, ez0, ecw, ech, "embedding table",
-                          "{} tokens x {} numbers".format(self.V, self.d), scale=self.rs)
-        text(tab, "one learned row per token", Point3(ex0 + self.d * ecw / 2, 0, ez0 + 0.9), 0.26, GREY)
-        hl = g.attachNewNode("rows")
-        for tid in ids:
-            rect(hl, ex0 - 0.08, ez0 - (tid + 1) * ech, ex0 + self.d * ecw + 0.08, ez0 - tid * ech, YELLOW, 1.4,
-                 y=-0.02)
-        tab.hide()
-        hl.hide()
-        # the token boxes from the tokenizer step fly over to the highway
-        moves = Parallel()
-        for i, nd in enumerate(getattr(self, "a_tokens", [])):
-            moves.append(Sequence(Wait(0.04 * i), LerpPosInterval(nd, 1.6, Point3(hw.col_x(i) - self.a_tok_x[i], 0,
-                                                                                   HDR_Z - 2.0), blendType="easeInOut"),
-                                  Func(nd.hide)))
+        ids = [int(t) for t in T["ids"]]
+        tb = L["table"]
+        words = r.attachNewNode("words")
+        for i, t in enumerate(self.ttoks):
+            c = YELLOW if i == self.hi else WHITE
+            text(words, disp(t), Point3(L["words_x"], 0, L["E"].rz(i) - 0.11), 0.3, c, align=TextNode.ARight)
+            text(words, str(ids[i]), Point3(L["ids_x"], 0, L["E"].rz(i) - 0.1), 0.26, YELLOW if i == self.hi else GREY)
+        text(words, "token   ID", Point3(L["words_x"] + 0.1, 0, L["E"].z_top + 0.4), 0.28, GREY)
+        words.hide()
+        self.keep(words)
+        table = self.keep(self.mat(E, tb, scale=self.rs, hero=False, gapx=0.0))
+        marks = r.attachNewNode("marks")
+        for i, tid in enumerate(ids):
+            zr = tb.z_top - (tid + 0.5) * tb.rh
+            c = YELLOW if i == self.hi else (0.8, 0.8, 0.85, 1)
+            rect(marks, tb.x0 - 0.06, zr - 0.05, tb.x1 + 0.06, zr + 0.05, c, 1.6 if i == self.hi else 1.0, y=-0.02)
+        marks.hide()
+        self.keep(marks)
+        rows = self.rows_of(T["emb"], L["E"], scale=self.rs)
         flies = Parallel()
         for i, tid in enumerate(ids):
-            row = heatmap(self.board, E[tid:tid + 1], ex0, ez0 - tid * ech, ecw, ech, self.rs, gap=0.08)
-            row.hide()
-            dx = hw.col_x(i) - (ex0 + self.d * ecw / 2)
-            flies.append(Sequence(Wait(0.1 * i), Func(row.show),
-                                  LerpPosInterval(row, 0.8, Point3(dx, 0, HW_TOP - 2.0 - (ez0 - tid * ech)),
-                                                  blendType="easeInOut"),
-                                  fade_out(row, 0.2), Func(row.hide), show_and_fade(hw.cols[i], 0.25)))
-        seq = Sequence(self.mapkey("embed"), self.go(x - 3.5, 3.5, 27),
-                       Parallel(moves, Sequence(Wait(1.2), show_and_fade(hw.hdr, 0.4), show_and_fade(hw.hero, 0.4))),
-                       show_and_fade(tab, 0.5), show_and_fade(hl, 0.4), flies, show_and_fade(hw.label, 0.3),
-                       self.track(self.T["emb"][self.hi], "token embedding"))
-        return ("TOKEN EMBEDDING. Each token ID picks its row in a learned table ({} x {}); the row becomes that "
-                "token's COLUMN of {} numbers. These columns are the 'residual stream' that now travels through the "
-                "model. Follow the YELLOW column, the last token <ai>: its column will predict the next token. "
-                "(Tracker: bottom right.)".format(self.V, self.d, self.d), seq)
+            zr = tb.z_top - tid * tb.rh + RH / 2 - tb.rh / 2
+            nd = self.row_node(E[tid], CW, ai=(i == self.hi))
+            flies.append(Sequence(Wait(0.16 * i), Func(nd.setPos, tb.x0, 0, zr), Func(nd.setSx, 1.0), Func(nd.show),
+                                  Parallel(LerpPosInterval(nd, 0.7, Point3(L["E"].x0, 0, L["E"].z_top - i * RH),
+                                                           blendType="easeInOut"),
+                                           LerpFunc(nd.setSx, 0.7, 1.0, CD / CW)),
+                                  Func(nd.hide), show_fade(rows[i], 0.15)))
+        tag = self.ai_tag(L["E"])
+        seq = Sequence(self.mapkey("embed"), self.overview(), show_fade(g_map, 1.2), Wait(2.4),
+                       self.go(FX - 1.0, L["X"].x1 + 1.0, L["P"].z_bot - 1.2, tb.z_top + 0.6),
+                       show_fade(words, 0.5), show_fade(table, 0.5), show_fade(marks, 0.4), flies,
+                       show_fade(tag, 0.3), self.track(T["emb"][self.hi], "token embedding"))
+        return ("THE MAP: everything the Transformer does, from left to right. Every token is one ROW of numbers and "
+                "keeps its row the whole way; the last row (yellow) is <ai>, whose row will predict the next word.  "
+                "STEP 1, EMBEDDING: each token ID picks its row of {} numbers from a learned table ({} x {}). "
+                "Stacked up, the rows form matrix E ({} x {}). Red = positive, blue = negative."
+                .format(self.d, self.V, self.d, n, self.d), seq)
 
-    # ------------------------------------------------------------ 2 positional encoding
+    # ================================================================== 2 positional encoding
     def s_position(self):
-        hw = self.hw
-        x = self.hx
-        g = self.board.attachNewNode("pos")
-        self.g_pos = g
-        top = hw.bot - 1.6
-        pe = self.columns(g, self.T["pe"], hw.g.getX(), top, scale=self.rs)
-        self.hide_all(pe)
-        lab = text(g, "positional encoding: a fixed wave pattern for position 0, 1, 2 ... {}".format(self.n - 1),
-                   Point3(x, 0, top - self.d * CH - 0.6), 0.34, YELLOW)
-        lab.hide()
-        rise = Parallel()
-        for i, c in enumerate(pe):
-            rise.append(Sequence(Wait(0.05 * i), LerpPosInterval(c, 0.9, Point3(0, 0, HW_TOP - top), blendType="easeIn"),
-                                 Func(c.hide)))
-        seq = Sequence(self.mapkey("pos"), Parallel(self.go(x, 0.0, 30), self.dim(self.g_embed)), show_and_fade(lab, 0.3), self.sweep(pe, 1.0),
-                       Wait(0.8), self.mapkey("pos", "embed"), rise, hw.morph(self.T["x0"], "embedding + position"),
-                       self.track(self.T["x0"][self.hi], "added position"))
-        return ("POSITIONAL ENCODING. Attention alone cannot tell word order. So every position gets its own fixed "
-                "pattern of sine/cosine waves (the stripes below), and it is ADDED to the column above it. Watch the "
-                "highway columns (and the tracker) change: now each column also knows where its token stands.", seq)
+        L, T = self.L, self.T
+        P = self.keep(self.mat(T["pe"], L["P"], scale=self.rs))
+        X = self.rows_of(T["x0"], L["X"], scale=self.rs)
+        tag = self.ai_tag(L["X"])
+        seq = Sequence(self.mapkey("pos"),
+                       self.go(L["E"].x0 - 1.0, L["X"].x1 + 1.0, L["P"].z_bot - 1.2, L["E"].z_top + 1.0),
+                       show_fade(P, 0.6), Wait(0.6), self.mapkey("pos", "embed"),
+                       Parallel(*[Sequence(Wait(0.07 * i), show_fade(nd, 0.3)) for i, nd in enumerate(X)]),
+                       show_fade(tag, 0.3), self.track(T["x0"][self.hi], "added position"))
+        return ("STEP 2, POSITION: so far the model would not know the ORDER of the rows. Each position gets a fixed "
+                "pattern of numbers (P, made of sine waves) and it is simply ADDED, number by number: X = E + P. "
+                "X ({} x {}) goes into the attention block.".format(self.n, self.d), seq)
 
-    # ------------------------------------------------------------ 3 Q, K, V of head 1
-    def _qkv(self, layer, head, xc, g, fast=False):
-        """Q, K, V matrices below the highway at station xc. Returns (nodes dict, interval)."""
-        H = self.T["layers"][layer]["heads"][head]
-        x0 = xc - (self.n - 1) * CS / 2
-        out, seq = {}, Parallel()
-        for j, (nm, col) in enumerate((("Q", YELLOW), ("K", GREEN), ("V", RED))):
-            W = H["W" + nm.lower()]
-            M = H[nm.lower()]
-            zt = 1.4 - j * 3.1
-            mat = self.matrix(g, W, xc + 7.3 + j * 2.5, HW_TOP - 0.6, 0.12, 0.075, "W_" + nm,
-                              "{} x {}".format(self.d, self.dh), color=col)
-            mat.hide()
-            cols = self.columns(g, M, x0, zt, ch=0.15)
-            self.hide_all(cols)
-            lab = g.attachNewNode("lab")
-            vlabel(lab, nm, "", (x0 - 1.5, 0, zt - 1.4), 0.55, col)
-            shape_label(lab, "{} x {}".format(self.n, self.dh), Point3(x0 - 1.5, 0, zt - 2.0), 0.28)
-            lab.hide()
-            drops = Parallel()
-            for i in range(self.n):
-                # a copy of the highway column drops down and becomes the Q / K / V column
-                nd, iv = self.fly(self.hw.M[i], x0 + i * CS, HW_TOP, CH, x0 + i * CS, zt, 0.15 * self.dh / self.d,
-                                  dur=0.7, delay=0.03 * i)
-                drops.append(Sequence(iv, Func(nd.hide), show_and_fade(cols[i], 0.2)))
-            seq.append(Sequence(Wait(j * (0.9 if fast else 1.5)), show_and_fade(mat, 0.3), drops, show_and_fade(lab, 0.3)))
-            out[nm] = (cols, x0, zt)
-        return out, seq
-
+    # ================================================================== 3 Q, K, V  (one multiplication worked out)
     def s_qkv(self):
-        x = self.hx
-        g = self.board.attachNewNode("qkv1")
-        self.g_att1 = g
-        nodes, seq = self._qkv(0, 0, x, g)
-        self.qkv1 = nodes
-        return ("LAYER 1, ATTENTION, HEAD 1. Copies of every column drop down and are multiplied by three learned "
-                "matrices: W_Q gives a QUERY ('what am I looking for?'), W_K a KEY ('what do I offer?'), W_V a VALUE "
-                "('what I pass on'). 32 numbers in, 16 out, for all {} tokens at once.".format(self.n),
-                Sequence(self.mapkey("attn"), Parallel(self.go(x + 3.0, -0.5, 30), self.retire(self.g_pos)), seq))
+        L, T, n = self.L, self.T, self.n
+        H = T["layers"][0]["heads"][0]
+        mats, rowsets, tags = [], [], []
+        for nm in ("Q", "K", "V"):
+            mats.append(self.keep(self.mat(H["W" + nm.lower()], L["W" + nm], hero=False, gapx=0.06)))
+            rowsets.append(self.rows_of(H[nm.lower()], L[nm], scale=sc_of(H[nm.lower()])))
+            tags.append(self.ai_tag(L[nm]))
+        xr = T["x0"][self.hi]
+        wq = H["Wq"][:, 0]
+        q0 = float(xr @ wq)
+        bx, bq, wb = L["X"], L["Q"], L["WQ"]
+        hz = bx.rz(self.hi)
+        # the worked multiplication: <ai>'s row of X stands up next to W_Q, so its 32 numbers sit
+        # beside the 32 numbers of W_Q's first column; multiply pair by pair and add up = first number of Q
+        hl_x = self.root().attachNewNode("hlx")
+        rect(hl_x, bx.x0 - 0.16, hz - RH / 2 - 0.06, bx.x1 + 0.16, hz + RH / 2 + 0.06, WHITE, 2.6, y=-0.03)
+        hl_x.hide()
+        cp = self.row_node(xr, CD, ai=False)
+        cp_to = (wb.x0 - 0.35, 0, wb.z_top + (RH - CD) * 0)       # after turning, the row hangs down-left
+        demo = self.root().attachNewNode("demo")
+        rect(demo, wb.x0 - 0.06, wb.z_bot - 0.06, wb.x0 + CD + 0.06, wb.z_top + 0.06, WHITE, 2.6, y=-0.03)
+        for k in range(0, self.d, 4):
+            lines(demo, [[(wb.x0 - 0.33, -0.03, wb.z_top - (k + 0.5) * CD), (wb.x0 + 0.02, -0.03,
+                                                                                 wb.z_top - (k + 0.5) * CD)]],
+                  (1, 1, 1, 0.5), 1.0)
+        terms = " + ".join("({:.1f})·({:.1f})".format(xr[k], wq[k]) for k in range(3))
+        tx = wb.x0 - 1.4
+        fill(demo, tx - 0.3, self.zq + 1.0, tx + 17.5, self.zq + 2.9, (0.02, 0.02, 0.03, 1), 0.92, y=-0.05)
+        text(demo, "<ai>'s row of X  ·  first column of W_Q  =  first number of <ai>'s row of Q",
+             Point3(tx, -0.06, self.zq + 2.2), 0.42, WHITE, Fonts.symbol, align=TextNode.ALeft)
+        text(demo, "{} + ...   ({} products added up)  =  {:.2f}".format(terms, self.d, q0),
+             Point3(tx, -0.06, self.zq + 1.4), 0.4, YELLOW, Fonts.symbol, align=TextNode.ALeft)
+        rect(demo, bq.x0 - 0.06, bq.rz(self.hi) - RH / 2, bq.x0 + CD + 0.06, bq.rz(self.hi) + RH / 2, WHITE, 2.6,
+             y=-0.03)
+        demo.hide()
+        eqs = [self.note("X · W_{0} = {0}\n({1} × {2}) · ({2} × {3}) = ({1} × {3})".format(nm, n, self.d, self.dh),
+                         L[nm].xc, L[nm].z_bot - 1.95, 0.34, WHITE, TextNode.ACenter) for nm in ("Q", "K", "V")]
+        lane_q = (wb.x0 - 2.6, bq.x1 + 7.0, bq.z_bot - 2.8, self.zq + 3.4)
+        seq = Sequence(self.mapkey("attn"),
+                       self.go(bx.x0 - 1.0, bq.x1 + 2.0, bx.z_bot - 1.0, self.zq + 1.0),
+                       show_fade(mats[0], 0.4), show_fade(hl_x, 0.3), Wait(0.5),
+                       Func(cp.setPos, bx.x0, 0, bx.z_top - self.hi * RH), Func(cp.setHpr, 0, 0, 0), Func(cp.show),
+                       Parallel(LerpPosInterval(cp, 1.6, Point3(*cp_to), blendType="easeInOut"),
+                                LerpHprInterval(cp, 1.6, (0, 0, 90))),
+                       fade_out(hl_x, 0.3), Func(hl_x.hide),
+                       self.go(*lane_q), show_fade(demo, 0.5), Wait(3.0), show_fade(rowsets[0][self.hi], 0.4),
+                       Wait(1.0), fade_out(demo, 0.4), Func(demo.hide), fade_out(cp, 0.3), Func(cp.hide),
+                       Func(cp.setColorScale, 1, 1, 1, 1),
+                       show_fade(eqs[0], 0.3),
+                       self.sweep([nd for i, nd in enumerate(rowsets[0]) if i != self.hi], 0.8),
+                       show_fade(tags[0], 0.2), Wait(0.6),
+                       self.go(bx.x0 - 1.0, bq.x1 + 6.0, L["V"].z_bot - 2.6, self.zq + 1.0),
+                       show_fade(mats[1], 0.3), self.sweep(rowsets[1], 0.7), show_fade(tags[1], 0.2),
+                       show_fade(eqs[1], 0.2),
+                       show_fade(mats[2], 0.3), self.sweep(rowsets[2], 0.7), show_fade(tags[2], 0.2),
+                       show_fade(eqs[2], 0.2))
+        return ("STEP 3, Q K V: three ordinary matrix multiplications with learned matrices: X · W_Q = Q, X · W_K = "
+                "K, X · W_V = V (each {} x {}). One number is worked out on top: <ai>'s row of X times the first "
+                "column of W_Q. The idea: Q = what each token is LOOKING FOR, K = what it OFFERS, V = what it will "
+                "PASS ON.".format(n, self.dh), seq)
 
-    # ------------------------------------------------------------ 4 scores table
-    def _table(self, parent, H, x0, z0, cw=0.9, ch=0.5, num=0.2):
-        """Q/K table: rows = keys, columns = queries. Returns (hdr, states)."""
-        n = self.n
-        hdr = parent.attachNewNode("th")
-        for i, t in enumerate(self.ttoks):
-            token_box(hdr, disp(t), self.tcolor[i], (x0 + (i + 0.5) * cw, 0, z0 + 0.35), 0.19 * cw / 0.9)
-            text(hdr, disp(t), Point3(x0 - 0.15, 0, z0 - (i + 0.64) * ch), 0.2 * ch / 0.5, self.tcolor[i],
-                 align=TextNode.ARight)
-        vlabel(hdr, "Q", "", (x0 + n * cw / 2, 0, z0 + 0.95), 0.42, YELLOW)
-        vlabel(hdr, "K", "", (x0 - 1.8, 0, z0 - n * ch / 2), 0.42, GREEN)
-        lines(hdr, [[(x0, 0, z0), (x0 + n * cw, 0, z0)], [(x0, 0, z0), (x0, 0, z0 - n * ch)]], GREY, 1.2)
-        hdr.flattenStrong()
-        hdr.hide()
-        st = {}
-        for key, M, fmt in (("raw", H["raw"], "{:.1f}"), ("scaled", H["scaled"], "{:.1f}"), ("att", H["att"], "{:.2f}")):
-            lo, up = parent.attachNewNode(key), parent.attachNewNode(key + "_hi")
-            for q in range(n):
-                for k in range(n):
-                    if key == "att" and k > q:
-                        continue
-                    v = M[q, k]
-                    col = (WHITE if v > 0.15 else GREY) if key == "att" else WHITE
-                    text(up if k > q else lo, fmt.format(v), Point3(x0 + (q + 0.5) * cw, 0, z0 - (k + 0.64) * ch),
-                         num, col)
-            for nd in (lo, up):
-                nd.flattenStrong()
-                nd.hide()
-            st[key], st[key + "_hi"] = lo, up
-        m = parent.attachNewNode("mask")
-        for q in range(n):
-            for k in range(q + 1, n):
-                fill(m, x0 + q * cw + 0.03, z0 - (k + 1) * ch + 0.03, x0 + (q + 1) * cw - 0.03, z0 - k * ch - 0.03,
-                     (0.35, 0.35, 0.4, 1), 0.35)
-                text(m, "-∞", Point3(x0 + (q + 0.5) * cw, -0.01, z0 - (k + 0.64) * ch), num, GREY, Fonts.symbol)
-        m.flattenStrong()
-        m.hide()
-        st["mask"] = m
-        dsc = parent.attachNewNode("discs")
-        for q in range(n):
-            for k in range(q + 1):
-                b = 0.12 + 0.7 * min(1.0, H["att"][q, k] * 1.5)
-                d = disc(dsc, min(cw, ch) * 0.42, (b * 0.8, b * 0.8, b * 0.8, 1), 20)
-                d.setPos(x0 + (q + 0.5) * cw, 0.02, z0 - (k + 0.5) * ch)
-        dsc.flattenStrong()
-        dsc.hide()
-        st["discs"] = dsc
-        return hdr, st
-
+    # ================================================================== 4 scores = Q K^T
     def s_scores(self):
-        H = self.T["layers"][0]["heads"][0]
-        g = self.g_att1
-        x0, z0, cw, ch = self.hx + 16.0, HW_TOP - 1.4, 0.9, 0.5
-        hdr, st = self._table(g, H, x0, z0)
-        self.tab1 = (x0, z0, cw, ch)
-        n = self.n
-        hl = rect(g, x0 + self.hi * cw + 0.02, z0 - n * ch, x0 + (self.hi + 1) * cw - 0.02, z0 + 0.62, YELLOW, 2.6,
-                  y=-0.03)
+        L, T, n = self.L, self.T, self.n
+        H = T["layers"][0]["heads"][0]
+        S, KT = L["S"], L["KT"]
+        ks = sc_of(H["k"])
+        kt = self.keep(self.mat(H["k"].T, KT, scale=ks, hero=False, gapx=0.28))
+        flies = Parallel()
+        for j in range(n):
+            nd = self.row_node(H["k"][j], CD, scale=ks, ai=False)
+            x_to = KT.cx(j) + RH / 2                     # after turning 90 degrees the row hangs down-left
+            flies.append(Sequence(Wait(0.05 * j), Func(nd.setPos, L["K"].x0, 0, L["K"].z_top - j * RH),
+                                  Func(nd.setHpr, 0, 0, 0), Func(nd.show),
+                                  Parallel(LerpPosInterval(nd, 1.0, Point3(x_to, 0, KT.z_top), blendType="easeInOut"),
+                                           LerpHprInterval(nd, 1.0, (0, 0, 90))),
+                                  Func(nd.hide)))
+        heads = self.root().attachNewNode("kt_heads")
+        for j, t in enumerate(self.ttoks):
+            text(heads, disp(t)[:5], Point3(KT.cx(j), 0, KT.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
+        text(heads, "Kᵀ", Point3(KT.x0 - 1.1, 0, KT.zc - 0.15), TS, WHITE, Fonts.symbol)
+        heads.hide()
+        self.keep(heads)
+        raw = H["scaled"]
+        sc = sc_of(raw[np.isfinite(raw)])
+        masked = np.where(np.triu(np.ones((n, n)), 1) > 0, np.nan, raw)
+        grid_raw = self.mat(raw, S, scale=sc, gapx=0.08)
+        grid_m = self.keep(self.mat(masked, S, scale=sc, gapx=0.08, nan=MASKED))
+        nums = self.root().attachNewNode("nums")
+        for j in range(n):
+            text(nums, "{:.1f}".format(raw[self.hi, j]), Point3(S.cx(j), 0, S.rz(self.hi) - 0.08), 0.2, WHITE)
+        nums.hide()
+        self.keep(nums)
+        j0 = int(np.argmax(H["att"][self.hi]))
+        demo = self.root().attachNewNode("demo")
+        rect(demo, L["Q"].x0 - 0.12, S.rz(self.hi) - RH / 2, L["Q"].x1 + 0.12, S.rz(self.hi) + RH / 2, WHITE, 2.6,
+             y=-0.03)
+        rect(demo, KT.x0 + j0 * RH, KT.z_bot - 0.05, KT.x0 + (j0 + 1) * RH, KT.z_top + 0.05, WHITE, 2.6, y=-0.03)
+        rect(demo, S.x0 + j0 * RH, S.rz(self.hi) - RH / 2, S.x0 + (j0 + 1) * RH, S.rz(self.hi) + RH / 2, WHITE, 2.8,
+             y=-0.04)
+        demo.hide()
+        nx = S.x1 + 0.6
+        info = self.note("Q · Kᵀ = scores\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.dh, self.dh, n, n, n),
+                         nx, S.z_top - 0.35, 0.34, WHITE)
+        info2 = self.note("cell (i, j) = how well token i's\nquestion (Q) matches token j (K).\n"
+                          "Then all ÷ {}{} = {:.0f}".format(SQ, self.dh, np.sqrt(self.dh)), nx, S.z_top - 1.6, 0.32)
+        mask_t = self.note("MASK: no looking at LATER\ntokens -> grey (−∞)", nx, S.z_top - 3.3, 0.32, ORANGE)
+        seq = Sequence(self.mapkey("attn"), self.go(L["K"].x0 - 0.8, S.x1 + 6.6, L["K"].zc, KT.z_top + 1.0),
+                       flies, show_fade(kt, 0.3), show_fade(heads, 0.3), show_fade(info, 0.3), show_fade(demo, 0.3),
+                       Wait(1.2), show_fade(grid_raw, 0.8), show_fade(nums, 0.3), show_fade(info2, 0.3), Wait(1.0),
+                       fade_out(demo, 0.3), Func(demo.hide),
+                       show_fade(grid_m, 0.5), Func(grid_raw.hide), show_fade(mask_t, 0.4))
+        return ("STEP 4, SCORES: Q · Kᵀ is again a matrix multiplication. The K rows turn into columns (Kᵀ, on "
+                "top), so cell (i, j) = row i of Q · column j of Kᵀ = how well token i's question matches token j. "
+                "The yellow row is <ai> compared with every token. Then the MASK: no token may look at tokens that "
+                "come AFTER it (grey). <ai> is last, so it sees everything.", seq)
+
+    # ================================================================== 5 softmax -> A
+    def s_softmax(self):
+        L, T, n = self.L, self.T, self.n
+        H = T["layers"][0]["heads"][0]
+        A = L["A"]
+        att = np.where(np.triu(np.ones((n, n)), 1) > 0, np.nan, H["att"])
+        grid = self.keep(self.mat(att, A, colors=gray_color, gapx=0.08, nan=MASKED))
+        nums = self.root().attachNewNode("anums")
+        for j in range(n):
+            v = H["att"][self.hi, j]
+            text(nums, "{:.2f}".format(v), Point3(A.cx(j), 0, A.rz(self.hi) - 0.08), 0.18,
+                 (0, 0, 0, 1) if v > 0.45 else WHITE)
+        for j, t in enumerate(self.ttoks):
+            text(nums, disp(t)[:5], Point3(A.cx(j), 0, A.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
+        nums.hide()
+        self.keep(nums)
+        info = self.note("softmax, row by row:\nall weights ≥ 0,\nevery row adds up to 1\n\nbright = big weight",
+                         A.x1 + 0.6, A.z_top - 0.4)
+        seq = Sequence(self.mapkey("attn"), self.go(L["S"].x0 - 0.6, A.x1 + 6.0, A.z_bot - 1.6, A.z_top + 1.4),
+                       show_fade(grid, 0.8), show_fade(nums, 0.4), show_fade(info, 0.3))
+        return ("STEP 5, WEIGHTS: softmax turns every row of scores into WEIGHTS (e^score, then divide by the row's "
+                "sum): all positive, every row adds up to 1, bright = big. The yellow row says how much <ai> pays "
+                "attention to each token - most to {}.".format(self.top_attn(H["att"], 2)), seq)
+
+    # ================================================================== 6 A . V  (weighted sum)
+    def s_weighted(self):
+        L, T, n = self.L, self.T, self.n
+        H = T["layers"][0]["heads"][0]
+        att, Vm = H["att"], H["v"]
+        vs = sc_of(Vm)
+        A, Vc, O1 = L["A"], L["Vc"], L["O1"]
+        w = att[self.hi]
+        wcol = self.root().attachNewNode("wcol")
+        for j in range(n):
+            text(wcol, "× {:.2f}".format(w[j]), Point3(L["mix"], 0, Vc.rz(j) - 0.1), 0.28,
+                 YELLOW if w[j] > 0.1 else GREY)
+        wcol.hide()
+        copies, moves = [], Parallel()
+        for j in range(n):
+            nd = self.row_node(Vm[j], CD, scale=vs, ai=False)
+            copies.append(nd)
+            moves.append(self.fly(nd, (L["V"].x0, 0, L["V"].z_top - j * RH), (Vc.x0, 0, Vc.z_top - j * RH), 1.0,
+                                  0.03 * j, hide_end=False))
+        bright = [0.12 + 0.88 * min(1.0, x * 2.5) for x in w]
+        dims = Parallel(*[LerpColorScaleInterval(copies[j], 0.6, (b, b, b, 1)) for j, b in enumerate(bright)])
+        merge = Parallel(*[Sequence(LerpPosInterval(copies[j], 0.9, Point3(O1.x0, 0, O1.z_top - self.hi * RH),
+                                                    blendType="easeIn"), Func(copies[j].hide),
+                                    Func(copies[j].setColorScale, 1, 1, 1, 1)) for j in range(n)])
+        rows = self.rows_of(H["out"], O1, scale=sc_of(H["out"]))
+        tag = self.ai_tag(O1)
+        info = self.note("A · V = head output\n({} × {}) · ({} × {}) = ({} × {})".format(n, n, n, self.dh, n, self.dh),
+                         O1.x1 + 0.5, O1.z_top - 0.4, 0.34, WHITE)
+        hl = self.root().attachNewNode("ahl")
+        rect(hl, A.x0 - 0.12, A.rz(self.hi) - RH / 2 - 0.05, A.x1 + 0.12, A.rz(self.hi) + RH / 2 + 0.05, WHITE, 2.8,
+             y=-0.03)
         hl.hide()
-        info = text(g, "", Point3(x0 + n * cw + 0.5, 0, z0 - 0.3), 0.32, WHITE, Fonts.symbol, TextNode.ALeft, wrap=14)
-        sh = shape_label(g, "Q Kᵀ = {} x {}".format(n, n), Point3(x0 + n * cw / 2, 0, z0 - n * ch - 0.5), 0.32)
-        sh.hide()
-        # Q columns fly up to become the column heads, K columns fly to become the row heads
-        qcols, qx0, qz = self.qkv1["Q"]
-        kcols, kx0, kz = self.qkv1["K"]
+        top2 = np.argsort(-w)[:2]
+        seq = Sequence(self.mapkey("attn"),
+                       self.go(L["V"].x0 - 0.6, O1.x1 + 6.0, Vc.z_bot - 1.6, A.z_top + 0.8),
+                       show_fade(hl, 0.3), Wait(0.8), show_fade(wcol, 0.5),
+                       self.go(L["V"].x0 - 0.6, O1.x1 + 6.0, Vc.z_bot - 1.6, Vc.z_top + 2.4), moves, Wait(0.3), dims, Wait(0.8), merge,
+                       show_fade(rows[self.hi], 0.3), Wait(0.5), fade_out(hl, 0.3), Func(hl.hide),
+                       fade_out(wcol, 0.3), Func(wcol.hide),
+                       self.sweep([nd for i, nd in enumerate(rows) if i != self.hi], 0.8), show_fade(tag, 0.2),
+                       show_fade(info, 0.3))
+        return ("STEP 6, MIX: A · V is a matrix multiplication again, and what it does is MIX the V rows: <ai>'s new "
+                "row = (its weight for token 1) × V row 1 + (weight 2) × V row 2 + ... Strong weights stay bright, "
+                "weak ones fade, then all are added up. So <ai> now carries information from '{}' and '{}'. Every "
+                "row does the same with its own weights.".format(disp(self.ttoks[int(top2[0])]),
+                                                                 disp(self.ttoks[int(top2[1])])), seq)
+
+    # ================================================================== 7 head 2
+    def s_head2(self):
+        L, T, n = self.L, self.T, self.n
+        H = T["layers"][0]["heads"][1]
+        H1 = T["layers"][0]["heads"][0]
+        parts = [self.keep(self.mat(H[nm[0].lower()], L[nm], scale=sc_of(H[nm[0].lower()]), gapx=0.0))
+                 for nm in ("Q2", "K2", "V2")]
+        mask = np.triu(np.ones((n, n)), 1) > 0
+        s2 = self.keep(self.mat(np.where(mask, np.nan, H["scaled"]), L["S2"], scale=sc_of(H["scaled"]), gapx=0.08,
+                                nan=MASKED))
+        a2 = self.keep(self.mat(np.where(mask, np.nan, H["att"]), L["A2"], colors=gray_color, gapx=0.08,
+                                nan=MASKED))
+        o2 = self.keep(self.mat(H["out"], L["O2"], scale=sc_of(H["out"])))
+        tag = self.ai_tag(L["O2"])
+        seq = Sequence(self.mapkey("attn"),
+                       self.go(L["fan"] - 1.0, L["O2"].x1 + 1.5, L["O2"].z_bot - 1.6, L["V"].z_bot + 0.5),
+                       self.sweep(parts, 0.6), Wait(0.3), show_fade(s2, 0.5), Wait(0.3), show_fade(a2, 0.5), Wait(0.3),
+                       show_fade(o2, 0.5), show_fade(tag, 0.2))
+        return ("STEP 7, HEAD 2: attention is done twice side by side, with a second set of W_Q, W_K, W_V - the same "
+                "steps 3 to 6. Each head can look for a different kind of relation. <ai> - head 1: {};  head 2: {}."
+                .format(self.top_attn(H1["att"], 2), self.top_attn(H["att"], 2)), seq)
+
+    # ================================================================== 8 concat x W_O = delta X
+    def s_concat(self):
+        L, T, n = self.L, self.T, self.n
+        LT = T["layers"][0]
+        C, D = L["C"], L["D"]
+        o1, o2 = LT["heads"][0]["out"], LT["heads"][1]["out"]
+        cat = np.hstack([o1, o2])
+        cs = sc_of(cat)
+        cmat = self.keep(self.mat(cat, C, scale=cs))
         flies = Parallel()
         for i in range(n):
-            nd, iv = self.fly(H["q"][i], qx0 + i * CS, qz, 0.15, x0 + (i + 0.5) * cw, z0 + 1.45, 0.06, dur=1.0,
-                              scale=sc_of(H["q"]), cw=cw * 0.6, delay=0.04 * i)
-            flies.append(Sequence(iv, fade_out(nd, 0.3), Func(nd.hide)))
-            nd2, iv2 = self.fly(H["k"][i], kx0 + i * CS, kz, 0.15, x0 - 2.8, z0 - (i + 0.15) * ch, 0.02, dur=1.0,
-                                scale=sc_of(H["k"]), cw=0.9, delay=0.6 + 0.04 * i)
-            flies.append(Sequence(iv2, fade_out(nd2, 0.3), Func(nd2.hide)))
+            a = self.row_node(o1[i], CD, scale=cs, ai=False)
+            b = self.row_node(o2[i], CD, scale=cs, ai=False)
+            flies.append(self.fly(a, (L["O1"].x0, 0, L["O1"].z_top - i * RH), (C.x0, 0, C.z_top - i * RH), 1.2,
+                                  0.03 * i))
+            flies.append(self.fly(b, (L["O2"].x0, 0, L["O2"].z_top - i * RH),
+                                  (C.x0 + self.dh * CD, 0, C.z_top - i * RH), 1.4, 0.3 + 0.03 * i))
+        wo = self.keep(self.mat(LT["Wo"], L["WO"], hero=False, gapx=0.06))
+        rows = self.rows_of(LT["delta"], D, scale=self.rs)
+        tags = [self.ai_tag(b) for b in (C, D)]
+        info = self.note("head 1 | head 2", C.xc, C.z_top + 0.4, 0.34, GREY, TextNode.ACenter)
+        info2 = self.note("concat · W_O = ΔX    ({} × {}) · ({} × {}) = ({} × {})".format(n, self.d, self.d, self.d, n,
+                                                                                         self.d),
+                          L["WO"].xc, C.z_bot - 2.0, 0.36, WHITE, TextNode.ACenter)
+        seq = Sequence(self.mapkey("attn"),
+                       self.go(L["O1"].x0 - 1.0, D.x1 + 1.0, L["O2"].z_bot - 1.4, C.z_top + 1.4),
+                       flies, self.go(C.x0 - 1.5, D.x1 + 1.5, C.z_bot - 2.8, C.z_top + 1.4), show_fade(cmat, 0.3), show_fade(tags[0], 0.2), show_fade(info, 0.3), Wait(0.3),
+                       show_fade(wo, 0.4), self.sweep(rows, 0.8), show_fade(tags[1], 0.2), show_fade(info2, 0.3))
+        return ("STEP 8: the two head outputs are put side by side (16 + 16 = {} numbers per row) and multiplied by "
+                "one more learned matrix W_O. The result ΔX is the CHANGE that attention wants to make to every "
+                "token's row.".format(self.d), seq)
 
-        def say(s):
-            info.node().setText(s)
-        seq = Sequence(
-            self.mapkey("attn"), self.go(x0 + 4.0, 1.6, 22), flies, show_and_fade(hdr, 0.4), show_and_fade(sh, 0.3),
-            Func(say, "1. score = Q . K\nfor every pair"),
-            Parallel(show_and_fade(st["raw"], 0.7), show_and_fade(st["raw_hi"], 0.7)), Wait(1.0),
-            Func(say, "2. divide by {}{} = {:.0f}".format(SQ, self.dh, np.sqrt(self.dh))),
-            Parallel(fade_out(st["raw"], 0.3), fade_out(st["raw_hi"], 0.3)), Func(st["raw"].hide),
-            Func(st["raw_hi"].hide), Parallel(show_and_fade(st["scaled"], 0.4), show_and_fade(st["scaled_hi"], 0.4)),
-            Wait(0.9), Func(say, "3. MASK: no looking\nat LATER tokens\n-> -∞"),
-            fade_out(st["scaled_hi"], 0.3), Func(st["scaled_hi"].hide), show_and_fade(st["mask"], 0.5), Wait(0.9),
-            Func(say, "4. softmax per\ncolumn -> weights\n(add up to 1)"),
-            fade_out(st["scaled"], 0.3), Func(st["scaled"].hide), show_and_fade(st["discs"], 0.4),
-            show_and_fade(st["att"], 0.4), Wait(0.4), show_and_fade(hl, 0.4),
-            Func(say, "our <ai> column:\n" + self.top_attn(H["att"], self.hi).replace(", ", "\n")))
-        return ("ATTENTION SCORES. The Q columns fly up to label the table's columns, the K columns its rows. Every "
-                "query is compared with every key (dot product), scaled, MASKED so no token sees later tokens, then "
-                "softmax turns each column into weights. The yellow column is our <ai>: it attends most to {}."
-                .format(self.top_attn(H["att"], self.hi)), seq)
+    # ================================================================== residual travel helper
+    def _residual(self, src_box, M, rz, plus):
+        """Copies of all rows of M climb up, travel along the red line, and drop into the + circle."""
+        n = self.n
+        px, pz = plus
+        trav = [self.row_node(M[i], CD, ai=(i == self.hi)) for i in range(n)]
+        lift = lambda i: rz + 0.9 + (n - 1 - i) * 0.07  # noqa: E731
+        up = Parallel(*[self.fly(nd, (src_box.x0, 0, src_box.z_top - i * RH), (src_box.x0, 0, lift(i)), 0.8,
+                                 0.02 * i, hide_end=False) for i, nd in enumerate(trav)])
+        over = Parallel(*[LerpPosInterval(nd, 2.4, Point3(px - self.d * CD / 2, 0, lift(i)), blendType="easeInOut")
+                          for i, nd in enumerate(trav)])
+        down = Parallel(*[Sequence(LerpPosInterval(nd, 0.7, Point3(px - self.d * CD / 2, 0, pz + 0.3),
+                                                   blendType="easeIn"), Func(nd.hide)) for nd in trav])
+        return up, over, down
 
-    # ------------------------------------------------------------ 5 weighted sum of V
-    def _wsum(self, H, g, x0, z_top, vsrc, label):
-        """weights x V for the hero, then the head output for all tokens. Returns (out_cols, out_x0, out_z, iv)."""
-        n, cw = self.n, 0.9
-        att, V, out = H["att"], H["v"], H["out"]
-        vcols, vx0, vz = vsrc
-        vs = sc_of(V)
-        copies = []
-        moves = Parallel()
-        for k in range(n):
-            nd, iv = self.fly(V[k], vx0 + k * CS, vz, 0.15, x0 + (k + 0.5) * cw, z_top, 0.15, dur=1.1, scale=vs,
-                              cw=cw * 0.7, delay=0.03 * k)
-            copies.append(nd)
-            moves.append(iv)
-        wtxt = g.attachNewNode("w")
-        for k in range(n):
-            w = att[self.hi, k]
-            text(wtxt, "x {:.2f}".format(w), Point3(x0 + (k + 0.5) * cw, 0, z_top + 0.25), 0.2,
-                 YELLOW if w > 0.1 else GREY)
-        wtxt.flattenStrong()
-        wtxt.hide()
-        bright = [0.12 + 0.88 * min(1.0, att[self.hi, k] * 2.5) for k in range(n)]
-        dims = Parallel(*[LerpColorScaleInterval(copies[k], 0.6, (bright[k], bright[k], bright[k], 1))
-                          for k in range(n)])
-        ox = x0 + n * cw + 1.6
-        res = heatmap(g, out[self.hi:self.hi + 1].T, ox - 0.35, z_top, 0.7, 0.15, sc_of(out), gap=0.1)
-        rect(res, ox - 0.45, z_top - self.dh * 0.15 - 0.08, ox + 0.45, z_top + 0.08, YELLOW, 2.0)
-        res.hide()
-        conv = lines(g, [[(x0 + (k + 0.5) * cw, 0, z_top - self.dh * 0.15 - 0.15),
-                          (ox, 0, z_top - self.dh * 0.15 - 0.6)] for k in range(n) if att[self.hi, k] > 0.05],
-                     YELLOW[:3] + (0.6,), 1.4)
-        conv.hide()
-        rl = text(g, "= {} output\nfor <ai>".format(label), Point3(ox, 0, z_top - self.dh * 0.15 - 1.2), 0.28, YELLOW)
-        rl.hide()
-        oz = z_top - self.dh * 0.15 - 2.4
-        ocols = self.columns(g, out, x0 + cw * 0.5, oz, ch=0.15, cs=cw)
-        self.hide_all(ocols)
-        ol = text(g, "{} output for ALL tokens  ({} x {})".format(label, n, self.dh),
-                  Point3(x0 + n * cw / 2, 0, oz - self.dh * 0.15 - 0.45), 0.3, WHITE)
-        ol.hide()
-        iv = Sequence(moves, show_and_fade(wtxt, 0.4), dims, Wait(0.3), show_and_fade(conv, 0.4),
-                      show_and_fade(res, 0.4), show_and_fade(rl, 0.3), Wait(0.5), self.sweep(ocols, 0.8),
-                      show_and_fade(ol, 0.3))
-        return ocols, x0 + cw * 0.5, oz, iv
+    # ================================================================== 9 add & norm
+    def s_add1(self):
+        L, T, n = self.L, self.T, self.n
+        LT = T["layers"][0]
+        X1 = L["X1"]
+        r1 = self.res_z[0]
+        up, over, down = self._residual(L["X"], T["x0"], r1, L["plus1"])
+        rows = self.rows_of(LT["x1"], X1, scale=self.rs)
+        tag = self.ai_tag(X1)
+        info = self.note("X + ΔX, then NORM each row:\nminus its mean, ÷ its spread,\n× gain + bias (learned)",
+                         L["norm1"][0], L["D"].z_bot - 2.0, 0.34, GREY, TextNode.ACenter)
+        seq = Sequence(self.mapkey("add1"),
+                       self.go(L["X"].x0 - 1.0, X1.x1 + 1.0, L["D"].z_bot - 3.0, r1 + 2.4),
+                       up, over, self.go(L["D"].x0 - 1.5, X1.x1 + 1.5, L["D"].z_bot - 3.4, r1 + 2.4),
+                       down, self.go(L["D"].x0 - 1.5, X1.x1 + 1.5, L["D"].z_bot - 3.6, L["D"].z_top + 1.6),
+                       show_fade(info, 0.3), self.sweep(rows, 0.8), show_fade(tag, 0.2),
+                       self.track(LT["x1"][self.hi], "layer 1: add & norm"))
+        return ("STEP 9, ADD & NORM: X itself jumps over the whole attention block (red line, the 'residual') and "
+                "is ADDED to ΔX: X + ΔX. So attention only adds a correction and nothing is lost. Then every row is "
+                "normalized (mean 0, spread 1) to keep the numbers in a stable range. Result: X1 ({} x {})."
+                .format(n, self.d), seq)
 
-    def s_weighted(self):
-        H = self.T["layers"][0]["heads"][0]
-        x0, z0, cw, ch = self.tab1
-        ztop = z0 - self.n * ch - 1.6
-        ocols, ox0, oz, iv = self._wsum(H, self.g_att1, x0, ztop, self.qkv1["V"], "head 1")
-        self.h1out = (ocols, ox0, oz)
-        top = np.argsort(-H["att"][self.hi])[:2]
-        return ("WEIGHTED SUM. The V columns fly over to the table. Each is multiplied by <ai>'s weight from the "
-                "yellow column (strong weights stay bright, weak ones fade) and they are added up: that is what "
-                "<ai> collects from the others - mostly from '{}' and '{}'. Every token does the same at once."
-                .format(disp(self.ttoks[top[0]]), disp(self.ttoks[top[1]])),
-                Sequence(self.mapkey("attn"), self.go(x0 + 6.0, -0.8, 31), iv))
-
-    # ------------------------------------------------------------ 6 head 2 (complete, faster)
-    def s_head2(self):
-        H = self.T["layers"][0]["heads"][1]
-        H1 = self.T["layers"][0]["heads"][0]
-        g = self.board.attachNewNode("head2")
-        bx = self.hx + 34.0
-        # its own Q, K, V (compact): copies of the highway drop into three small matrices
-        mats = []
-        for j, (nm, col) in enumerate((("Q", YELLOW), ("K", GREEN), ("V", RED))):
-            M = H[nm.lower()]
-            zt = 1.4 - j * 2.6
-            cols = self.columns(g, M, bx, zt, ch=0.13, cs=0.36)
-            self.hide_all(cols)
-            lab = text(g, nm + "  (W_{} of head 2)".format(nm), Point3(bx - 0.3, 0, zt + 0.25), 0.26, col,
-                       align=TextNode.ALeft)
-            lab.hide()
-            mats.append((cols, lab, zt))
-        tx0, tz0 = bx + 11.0, HW_TOP - 1.4
-        hdr, st = self._table(g, H, tx0, tz0)
-        hl = rect(g, tx0 + self.hi * 0.9 + 0.02, tz0 - self.n * 0.5, tx0 + (self.hi + 1) * 0.9 - 0.02, tz0 + 0.62,
-                  YELLOW, 2.6, y=-0.03)
-        hl.hide()
-        title = text(g, "HEAD 2: same steps, its own matrices", Point3(tx0 + self.n * 0.45 + 1.0, 0, HDR_Z + 0.9), 0.5,
-                     WHITE)
-        hc = bx + 2.2                                   # the highway stands above head 2's Q, K, V
-        hx0 = hc - (self.n - 1) * CS / 2
-        title.hide()
-        drops = Parallel()
-        for j, (cols, lab, zt) in enumerate(mats):
-            seqj = Sequence(Wait(0.6 * j), show_and_fade(lab, 0.2))
-            for i in range(self.n):
-                nd, iv = self.fly(self.hw.M[i], hx0 + i * CS, HW_TOP, CH, bx + i * 0.36, zt, 0.13 * self.dh / self.d,
-                                  dur=0.9, cw=0.3, delay=0.02 * i)
-                seqj.append(Sequence(iv, Func(nd.hide), Func(cols[i].show)))
-            drops.append(seqj)
-        ocols, ox0, oz, iv = self._wsum_simple(H, g, tx0, tz0 - self.n * 0.5 - 1.6, "head 2")
-        self.h2out = (ocols, ox0, oz)
-        self.g_head2 = g
-        self.hx = hc
-        seq = Sequence(self.mapkey("attn"), self.dim(self.g_att1),
-                       Parallel(self.hw.move(hc, 1.6), self.go(bx + 9.6, 1.5, 33)),
-                       show_and_fade(title, 0.4), drops,
-                       show_and_fade(hdr, 0.4), show_and_fade(st["mask"], 0.3), show_and_fade(st["discs"], 0.4),
-                       show_and_fade(st["att"], 0.4), show_and_fade(hl, 0.3), iv)
-        return ("MULTI-HEAD: a second head repeats ALL the steps with its own W_Q, W_K, W_V, so it can look for a "
-                "different kind of relation. For <ai>: head 1 -> {};  head 2 -> {}."
-                .format(self.top_attn(H1["att"], self.hi, 2), self.top_attn(H["att"], self.hi, 2)), seq)
-
-    def _wsum_simple(self, H, g, x0, z_top, label):
-        """Head-2 version of the weighted sum (V comes from the compact matrix)."""
-        n, cw = self.n, 0.9
-        out = H["out"]
-        ocols = self.columns(g, out, x0 + cw * 0.5, z_top, ch=0.15, cs=cw)
-        self.hide_all(ocols)
-        ol = text(g, "weights x V  =  {} output  ({} x {})".format(label, n, self.dh),
-                  Point3(x0 + n * cw / 2, 0, z_top - self.dh * 0.15 - 0.45), 0.3, WHITE)
-        ol.hide()
-        hr = rect(g, x0 + (self.hi + 0.5) * cw - 0.42, z_top - self.dh * 0.15 - 0.08, x0 + (self.hi + 0.5) * cw + 0.42,
-                  z_top + 0.08, YELLOW, 2.0)
-        hr.hide()
-        return ocols, x0 + cw * 0.5, z_top, Sequence(self.sweep(ocols, 0.8), show_and_fade(hr, 0.2),
-                                                     show_and_fade(ol, 0.3))
-
-    # ------------------------------------------------------------ 7 concat x W_O = delta E
-    def s_concat(self):
-        LT = self.T["layers"][0]
-        g = self.board.attachNewNode("concat")
-        x = S_CAT
-        x0 = x - (self.n - 1) * CS / 2
-        z1, z2 = 1.4, 1.4 - self.dh * 0.15
-        flies = Parallel()
-        for (ocols, ox0, oz), zt, H in ((self.h1out, z1, LT["heads"][0]), (self.h2out, z2, LT["heads"][1])):
-            for i in range(self.n):
-                nd, iv = self.fly(H["out"][i], ox0 + i * 0.9, oz, 0.15, x0 + i * CS, zt, 0.15, dur=1.6,
-                                  scale=sc_of(H["out"]), delay=0.03 * i)
-                flies.append(Sequence(iv, Func(nd.wrtReparentTo, g)))    # belongs to this station from now on
-        lab = g.attachNewNode("lab")
-        text(lab, "head 1", Point3(x0 - 1.6, 0, z1 - 1.2), 0.3, YELLOW)
-        text(lab, "head 2", Point3(x0 - 1.6, 0, z2 - 1.2), 0.3, YELLOW)
-        shape_label(lab, "concat = {} x {}".format(self.n, 2 * self.dh), Point3(x, 0, z2 - self.dh * 0.15 - 0.45), 0.3)
-        lab.hide()
-        wo = self.matrix(g, LT["Wo"], x + 7.2, 1.4, 0.13, 0.13, "W_O", "{} x {}".format(self.d, self.d))
-        wo.hide()
-        dz = z2 - self.dh * 0.15 - 1.4
-        de = self.columns(g, LT["delta"], x0, dz, ch=0.12, scale=self.rs)
-        self.hide_all(de)
-        dl = g.attachNewNode("dl")
-        vlabel(dl, "ΔE", "", (x0 - 1.6, 0, dz - 2.2), 0.5, YELLOW)
-        shape_label(dl, "concat x W_O = {} x {}".format(self.n, self.d), Point3(x, 0, dz - self.d * 0.12 - 0.45), 0.3)
-        hr = rect(dl, x0 + self.hi * CS - CS * 0.45, dz - self.d * 0.12 - 0.08, x0 + self.hi * CS + CS * 0.45, dz + 0.08,
-                  YELLOW, 2.2)
-        dl.hide()
-        hr.hide()
-        self.delta = (de, x0, dz)
-        self.g_concat = g
-        self.hx = x
-        seq = Sequence(self.mapkey("attn"), self.dim(self.g_head2),
-                       Parallel(self.hw.move(x, 2.2), self.go(x + 3.0, -0.3, 33), flies),
-                       show_and_fade(lab, 0.3), Wait(0.3),
-                       show_and_fade(wo, 0.4), self.sweep(de, 1.0), show_and_fade(dl, 0.4), Func(hr.show))
-        return ("The highway moves on, and both head outputs fly along below it and are stacked (16 + 16 = 32 numbers per token), then mixed by one "
-                "more learned matrix W_O. The result ΔE is the CHANGE each token wants to make to its column "
-                "after looking at the others. <ai>'s change is framed.", seq)
-
-    # ------------------------------------------------------------ 8 residual: add delta E into the stream
-    def s_residual(self):
-        LT = self.T["layers"][0]
-        hw = self.hw
-        de, dx0, dz = self.delta
-        rise = Parallel()
-        for i in range(self.n):
-            nd, iv = self.fly(LT["delta"][i], dx0 + i * CS, dz, 0.12, dx0 + i * CS, HW_TOP, CH, dur=1.0, delay=0.04 * i)
-            rise.append(Sequence(iv, fade_out(nd, 0.3), Func(nd.hide)))
-        plus = text(self.board, "+", Point3(S_CAT - 7.6, 0, 5.0), 1.0, YELLOW)
-        plus.hide()
-        sp, arrows = self._space(Point3(S_CAT, 12, 17.5), LT["x_in"], LT["res1"])
-        sp.hide()
-        c3 = Point3(S_CAT, 12, 18.2)
-        seq = Sequence(self.mapkey("add1"), self.go(S_CAT, 1.0, 30), show_and_fade(plus, 0.3), rise,
-                       hw.morph(LT["res1"], "after attention: x + ΔE"), fade_out(plus, 0.3),
-                       self.track(LT["res1"][self.hi], "layer 1: added attention"), Wait(0.8),
-                       self.view(c3, -30, 24, 15), Func(sp.show), fade_in(sp, 0.6),
-                       Parallel(*[LerpFunc(a.grow, fromData=0.001, toData=1.0, duration=0.8) for a in arrows["before"]]),
-                       Wait(0.5),
-                       Parallel(*[self._move_arrow(a, b) for a, b in zip(arrows["before"], arrows["after"])],
-                                self.orbit(c3, -30, 25, 24, 15, 5.0)),
-                       Parallel(self.go(S_CAT, 3.0, 26), self.retire(sp), self.dim(self.g_concat)))
-        return ("ADD (residual connection): every token's change ΔE rises up into the highway and is "
-                "ADDED to its column - all {} tokens at the same time. This is how what each token learned from the "
-                "others gets written into it. Above: the same vectors squeezed into 3D - every arrow moves at once."
-                .format(self.n), seq)
-
-    def _space(self, center, A, B):
-        sp = self.board.attachNewNode("space")
-        sp.setPos(center)
-        both = np.vstack([A, B])
-        mu = both.mean(0)
-        _, _, Vt = np.linalg.svd(both - mu, full_matrices=False)
-        P = (both - mu) @ Vt[:3].T
-        P = P / (np.abs(P).max() + 1e-9) * 3.6
-        pa, pb = P[:len(A)], P[len(A):]
-        L = 4.0
-        grid = []
-        for k in range(-4, 5):
-            grid.append([(k, -4, 0), (k, 4, 0)])
-            grid.append([(-4, k, 0), (4, k, 0)])
-        lines(sp, grid, (0.16, 0.18, 0.2, 1), 1.0)
-        lines(sp, [[(-L, 0, 0), (L, 0, 0)], [(0, -L, 0), (0, L, 0)], [(0, 0, -L), (0, 0, L)]], GREY, 1.6)
-        arrows = {"before": [], "after": []}
-        for i in range(len(A)):
-            col = YELLOW if i == self.hi else self.tcolor[i]
-            a = Arrow(sp, Point3(0, 0, 0), Point3(*pa[i]), col, 3.6 if i == self.hi else 2.4)
-            lab = text(a.root, disp(self.ttoks[i]), Point3(*(pa[i] * 1.12)), 0.36 if i == self.hi else 0.28, col)
-            lab.setBillboardPointEye()
-            a.label = lab
-            arrows["before"].append(a)
-            arrows["after"].append(Point3(*pb[i]))
-        return sp, arrows
-
-    def _move_arrow(self, a, end):
-        start = Point3(a.end)
-        ghost = disc(a.root.getParent(), 0.07, a.color[:3] + (0.5,), 12)
-        ghost.setPos(start)
-        ghost.setBillboardPointEye()
-        trail = lines(a.root.getParent(), [[start, end]], a.color[:3] + (0.45,), 1.2)
-        trail.hide()
-
-        def f(t):
-            a.end = start * (1 - t) + end * t
-            a.grow(1.0)
-            a.label.setPos(a.end * 1.12)
-        return Sequence(LerpFunc(f, fromData=0.0, toData=1.0, duration=2.0, blendType="easeInOut"), Func(trail.show))
-
-    # ------------------------------------------------------------ 9 layer norm
-    def s_norm(self):
-        LT = self.T["layers"][0]
-        hw = self.hw
-        x = S_NORM
-        g = self.board.attachNewNode("norm")
-        self.g_norm = g
-        v = LT["res1"][self.hi]
-        normed = (v - v.mean()) / np.sqrt(v.var() + 1e-5)
-        out = LT["x1"][self.hi]
-        sc = 1.15 / max(np.abs(v).max(), np.abs(normed).max(), np.abs(out).max())
-        bars = []
-        for k, (vals, col, title) in enumerate(((v, WHITE, "<ai> before"), (normed, YELLOW, "minus mean, / spread"),
-                                               (out, GREEN, "x gain + bias (learned)"))):
-            bg = g.attachNewNode("bars")
-            zb = 0.4 - k * 2.9
-            for j, val in enumerate(vals):
-                h = val * sc
-                fill(bg, x - 7.0 + j * 0.4, zb + min(0, h), x - 7.0 + j * 0.4 + 0.28, zb + max(0, h), col, 0.9, y=0)
-            lines(bg, [[(x - 7.2, 0, zb), (x - 7.0 + self.d * 0.4, 0, zb)]], GREY, 1.0)
-            text(bg, title, Point3(x - 7.2, 0, zb + 1.3), 0.3, col, align=TextNode.ALeft)
-            text(bg, "mean {:+.2f}  spread {:.2f}".format(vals.mean(), vals.std()), Point3(x + 6.0, 0, zb + 1.3), 0.28,
-                 GREY, align=TextNode.ARight)
-            bg.hide()
-            bars.append(bg)
-        nd, drop = self.fly(v, self.hero_x(x), HW_TOP, CH, x - 8.2, 0.4 + 2.7, 0.08, dur=1.0)
-        seq = Sequence(self.mapkey("add1"), self.dim(self.g_concat), self.move_hw(x, 1.6), self.go(x, 1.0, 27), drop, Func(nd.hide),
-                       Parallel(*[Sequence(Wait(0.7 * k), show_and_fade(b, 0.4)) for k, b in enumerate(bars)]),
-                       Wait(0.4), hw.morph(LT["x1"], "after Add & Norm"),
-                       self.track(LT["x1"][self.hi], "layer 1: Add & Norm"))
-        return ("NORM (layer normalization): each column is shifted to mean 0 and scaled to spread 1, then multiplied "
-                "by a learned gain and bias (shown for <ai> as bars). It keeps the numbers in a stable range layer "
-                "after layer. Then the whole highway is updated.", seq)
-
-    # ------------------------------------------------------------ 10 feed-forward
+    # ================================================================== 10 feed forward
     def s_ffn(self):
-        LT = self.T["layers"][0]
-        x = S_FFN
-        g = self.board.attachNewNode("ffn")
-        self.g_ffn = g
-        i = self.hi
-        x_in, pre, hid, ff = LT["x1"][i], LT["hid_pre"][i], LT["hid"][i], LT["ff"][i]
-        F = len(pre)
-        ztop = 1.0
-        ix, ox = x - 7.5, x + 7.5
-        dz = 0.28
-        nd, drop = self.fly(x_in, self.hero_x(x), HW_TOP, CH, ix, ztop, 0.2, dur=1.0)
-        text(g, "<ai>  ({} numbers)".format(self.d), Point3(ix, 0, ztop + 0.45), 0.3, YELLOW)
-        neurons = g.attachNewNode("neurons")
-        dots = []
-        sc = sc_of(pre)
-        per = F // 4
-        for j in range(F):
-            d = disc(neurons, 0.11, value_color(pre[j], sc), 14)
-            d.setPos(x - 0.6 + (j // per) * 0.42, -0.01, ztop - (j % per) * dz)
-            dots.append(d)
-        text(neurons, "{} neurons".format(F), Point3(x, 0, ztop + 0.45), 0.32, WHITE)
-        shape_label(neurons, "x W1 + b1:  {} -> {}".format(self.d, F), Point3(x - 3.8, 0, ztop + 0.45), 0.28)
-        relu = text(g, "ReLU: negative -> 0\n{} of {} switched off".format(int((pre <= 0).sum()), F),
-                    Point3(x, 0, ztop - per * dz - 0.3), 0.32, ORANGE)
-        outc = heatmap(g, ff[None, :].T, ox - 0.4, ztop, 0.8, 0.2, self.rs, gap=0.1)
-        self.ffn_out = (outc, ztop, 0.2, ox)
-        olab = g.attachNewNode("ol")
-        text(olab, "<ai> output", Point3(ox, 0, ztop + 0.45), 0.3, GREEN)
-        shape_label(olab, "x W2 + b2:  {} -> {}".format(F, self.d), Point3(x + 3.8, 0, ztop + 0.45), 0.28)
-        cons = g.attachNewNode("cons")
-        W1, W2 = self.engine.m.w["l0.W1"], self.engine.m.w["l0.W2"]
-        for j in np.argsort(-hid)[:6]:
-            p = dots[j].getPos()
-            for k in np.argsort(-np.abs(W1[:, j]))[:2]:
-                lines(cons, [[(ix + 0.4, 0, ztop - (k + 0.5) * 0.2), (p.x, 0, p.z)]], BLUE[:3] + (0.6,), 1.2)
-            for k in np.argsort(-np.abs(W2[j]))[:2]:
-                lines(cons, [[(p.x, 0, p.z), (ox - 0.4, 0, ztop - (k + 0.5) * 0.2)]], RED[:3] + (0.6,), 1.2)
-        for nd2 in (neurons, relu, outc, olab, cons):
-            nd2.hide()
-        off = [d for j, d in enumerate(dots) if pre[j] <= 0]
-        seq = Sequence(self.mapkey("ffn"), self.dim(self.g_norm), self.move_hw(x, 1.4), self.go(x, -0.3, 28), drop,
-                       show_and_fade(neurons, 0.6), show_and_fade(cons, 0.4), Wait(0.4), show_and_fade(relu, 0.3),
-                       Parallel(*[LerpColorScaleInterval(d, 0.5, (0.15, 0.15, 0.15, 1)) for d in off]), Wait(0.4),
-                       show_and_fade(olab, 0.3), show_and_fade(outc, 0.4))
-        return ("FEED FORWARD (the MLP). <ai>'s column drops into a small 2-layer network: expand to {} neurons, ReLU "
-                "switches off the negative ones (dark), compress back to {}. Only the strongest connections are drawn. "
-                "This is where each token 'thinks on its own', after attention let it look at the others."
-                .format(F, self.d), seq)
+        L, T, n = self.L, self.T, self.n
+        LT = T["layers"][0]
+        w = self.engine.m.w
+        W1 = self.keep(self.mat(w["l0.W1"], L["W1"], hero=False, gapx=0.0))
+        W2 = self.keep(self.mat(w["l0.W2"], L["W2f"], hero=False, gapx=0.06))
+        pre, hid = LT["hid_pre"], LT["hid"]
+        hs = sc_of(pre)
+        Hpre = self.mat(pre, L["H"], scale=hs, gapx=0.0)
+        Hrelu = self.keep(self.mat(hid, L["H"], scale=hs, gapx=0.0))
+        rows = self.rows_of(LT["ff"], L["F"], scale=self.rs)
+        tags = [self.ai_tag(b) for b in (L["H"], L["F"])]
+        off = int((pre[self.hi] <= 0).sum())
+        relu = self.note("ReLU: every negative number -> 0\n(<ai>: {} of {} switched off)".format(off, self.ff),
+                         L["H"].xc, L["H"].z_bot - 2.0, 0.36, ORANGE, TextNode.ACenter)
+        info = self.note("X1 · W1\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.d, self.d, self.ff, n, self.ff),
+                         L["W1"].xc, L["W1"].z_bot - 1.9, 0.34, WHITE, TextNode.ACenter)
+        info2 = self.note("hidden · W2\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.ff, self.ff, self.d, n,
+                                                                                 self.d),
+                          L["F"].xc, L["F"].z_bot - 2.0, 0.34, WHITE, TextNode.ACenter)
+        seq = Sequence(self.mapkey("ffn"),
+                       self.go(L["X1"].x0 - 1.0, L["H"].x1 + 1.0, L["H"].z_bot - 3.4, L["X1"].z_top + 2.0),
+                       show_fade(W1, 0.4), show_fade(Hpre, 0.6), show_fade(tags[0], 0.2), show_fade(info, 0.3),
+                       Wait(0.8), show_fade(relu, 0.3), Wait(0.3), show_fade(Hrelu, 0.6), Func(Hpre.hide), Wait(0.8),
+                       self.go(L["H"].x0 - 1.0, L["F"].x1 + 1.5, L["W2f"].z_bot - 1.0, L["W2f"].z_top + 0.8),
+                       show_fade(W2, 0.4), self.sweep(rows, 0.8), show_fade(tags[1], 0.2), show_fade(info2, 0.3))
+        return ("STEP 10, FEED FORWARD: two more matrix multiplications: X1 · W1 gives {} numbers per token, ReLU sets "
+                "every negative one to 0 (dark), then · W2 brings it back to {}. Each row is processed ON ITS OWN - "
+                "no mixing between rows. Attention = tokens talk to each other; feed forward = each token thinks "
+                "for itself.".format(self.ff, self.d), seq)
 
-    # ------------------------------------------------------------ 11 add & norm (end of layer 1)
+    # ================================================================== 11 add & norm -> layer 1 output
     def s_add2(self):
-        LT = self.T["layers"][0]
-        hw = self.hw
-        g = self.board.attachNewNode("add2")
-        self.g_add2 = g
-        fz = 1.4
-        fx0 = S_ADD2 - (self.n - 1) * CS / 2
-        fcols = self.columns(g, LT["ff"], fx0, fz, scale=self.rs)
-        self.hide_all(fcols)
-        fl = text(g, "the SAME network ran on EVERY token:  feed-forward output  {} x {}".format(self.n, self.d),
-                  Point3(S_ADD2, 0, fz - self.d * CH - 0.5), 0.3, WHITE)
-        fl.hide()
-        hr = rect(g, fx0 + self.hi * CS - CS * 0.45, fz - self.d * CH - 0.08, fx0 + self.hi * CS + CS * 0.45, fz + 0.08,
-                  YELLOW, 2.2)
-        hr.hide()
-        # <ai>'s own result (from the network on the left) slides over into its place
-        _, _, _, ox = self.ffn_out
-        nd, slide = self.fly(LT["ff"][self.hi], ox, fz, 0.2, fx0 + self.hi * CS, fz, CH, dur=1.2)
-        rise = Parallel()
-        for i in range(self.n):
-            rise.append(Sequence(Wait(0.04 * i), LerpPosInterval(fcols[i], 0.9, Point3(0, 0, HW_TOP - fz)),
-                                 fade_out(fcols[i], 0.2), Func(fcols[i].hide)))
-        seq = Sequence(self.mapkey("add2"), Parallel(self.move_hw(S_ADD2, 1.6), slide), Func(nd.hide),
-                       Func(fcols[self.hi].show), self.sweep([c for i, c in enumerate(fcols) if i != self.hi], 0.8),
-                       show_and_fade(fl, 0.3), show_and_fade(hr, 0.2), Wait(0.8), fade_out(hr, 0.2), fade_out(fl, 0.2),
-                       rise, hw.morph(LT["x_out"], "layer 1 output"), self.track(LT["x_out"][self.hi], "end of layer 1"))
-        return ("ADD & NORM again: every token went through the SAME feed-forward network (their outputs appear next "
-                "to <ai>'s). They rise into the highway, are ADDED to every column and normalized. That completes "
-                "LAYER 1 - same shape ({} x {}), new numbers. Watch the tracker.".format(self.n, self.d), seq)
+        L, T, n = self.L, self.T, self.n
+        LT = T["layers"][0]
+        X2 = L["X2"]
+        r2 = self.res_z[1]
+        up, over, down = self._residual(L["X1"], LT["x1"], r2, L["plus2"])
+        rows = self.rows_of(LT["x_out"], X2, scale=self.rs)
+        tag = self.ai_tag(X2)
+        seq = Sequence(self.mapkey("add2"), self.go(L["X1"].x0 - 1.0, X2.x1 + 1.0, X2.z_bot - 2.0, r2 + 2.4),
+                       up, over, down, self.go(L["F"].x0 - 1.5, X2.x1 + 1.5, X2.z_bot - 2.0, X2.z_top + 1.6),
+                       self.sweep(rows, 0.8), show_fade(tag, 0.2),
+                       self.track(LT["x_out"][self.hi], "end of layer 1"))
+        return ("STEP 11, ADD & NORM again: X1 jumps over the feed forward block and is added to F, then every row "
+                "is normalized. X2 is the output of LAYER 1 - the same shape as X ({} x {}), but now every row knows "
+                "something about the other tokens.".format(n, self.d), seq)
 
-    # ------------------------------------------------------------ 12 layer 2
+    # ================================================================== 12 layer 2
     def s_layer2(self):
-        LT = self.T["layers"][1]
-        hw = self.hw
-        x = S_L2
-        g = self.board.attachNewNode("layer2")
-        self.g_l2 = g
-        tabs = []
-        cw, ch = 0.6, 0.34
-        for h in range(2):
-            x0, z0 = x - 9.4 + h * 10.2, 0.5
-            hdr, st = self._table(g, LT["heads"][h], x0, z0, cw, ch, num=0.13)
-            hl = rect(g, x0 + self.hi * cw + 0.02, z0 - self.n * ch, x0 + (self.hi + 1) * cw - 0.02, z0 + 0.45, YELLOW,
-                      2.0, y=-0.03)
-            hl.hide()
-            t = text(g, "layer 2, head {}".format(h + 1), Point3(x0 + self.n * cw / 2, 0, z0 + 1.5), 0.36, WHITE)
-            t.hide()
-            tabs.append((t, hdr, st, hl))
-        anim = Sequence()
-        for t, hdr, st, hl in tabs:
-            anim.append(Sequence(show_and_fade(t, 0.2), show_and_fade(hdr, 0.2), show_and_fade(st["mask"], 0.2),
-                                 show_and_fade(st["discs"], 0.3), show_and_fade(st["att"], 0.3), show_and_fade(hl, 0.2)))
+        L, T = self.L, self.T
+        LT = T["layers"][1]
+        rows = self.rows_of(LT["x_out"], L["X3"], scale=self.rs)
+        tag = self.ai_tag(L["X3"])
+        x0, x1 = L["L2"]
+        box = self.root().attachNewNode("l2flash")
+        fill(box, x0, L["X2"].zc - 3.0, x1, L["X2"].zc + 3.0, (0.45, 0.75, 0.45, 1), 0.18)
+        box.hide()
         seq = Sequence(Func(self.app.ui.arch.set_layer, "layer 2 of 2"), self.mapkey("attn"),
-                       self.dim(self.g_ffn), self.move_hw(x, 1.4), self.go(x, 1.0, 28), anim,
-                       self.mapkey("add1"), hw.morph(LT["x1"], "layer 2: after attention + Add & Norm"),
-                       self.track(LT["x1"][self.hi], "layer 2: attention"), Wait(0.6),
-                       self.mapkey("ffn"), Wait(0.5), self.mapkey("add2"),
-                       hw.morph(LT["x_out"], "layer 2 output = final"), self.track(LT["x_out"][self.hi], "end of layer 2"),
+                       self.go(L["X2"].x0 - 1.0, L["X3"].x1 + 1.0, L["X2"].z_bot - 2.0, L["X2"].z_top + 3.0),
+                       show_fade(box, 0.4), self.mapkey("add1"), Wait(0.4), self.mapkey("ffn"), Wait(0.4),
+                       self.mapkey("add2"), Wait(0.3), fade_out(box, 0.4), Func(box.hide), self.sweep(rows, 0.8),
+                       show_fade(tag, 0.2), self.track(LT["x_out"][self.hi], "end of layer 2"),
                        Func(self.app.ui.arch.set_layer, "x 2 layers"))
-        H1, H2 = LT["heads"]
-        return ("LAYER 2: exactly the same steps with its own matrices (shown faster): 2 attention heads, Add & Norm, "
-                "feed-forward, Add & Norm. Now <ai> looks at: {}  /  {}. Real models stack 30-100 such layers."
-                .format(self.top_attn(H1["att"], self.hi, 2), self.top_attn(H2["att"], self.hi, 2)), seq)
+        return ("STEP 12, LAYER 2: steps 3-11 once more, with its own learned matrices. In layer 2, <ai> looks most "
+                "at: {}. Real models stack 30-100 such layers.".format(self.top_attn(LT["heads"][0]["att"], 2)), seq)
 
-    # ------------------------------------------------------------ 13 output
+    # ================================================================== 13 output
     def s_output(self):
-        x = S_OUT
-        g = self.board.attachNewNode("out")
+        L, T = self.L, self.T
         m = self.engine.m
-        xl = self.T["x_final"][-1]
-        logits, probs = self.T["logits"], self.T["probs"]
-        wx0, wz = x - 6.5, 1.6
-        nd, drop = self.fly(xl, self.hero_x(x), HW_TOP, CH, x - 8.3, wz, 0.2, dur=1.1)
-        lab = text(g, "<ai>", Point3(x - 8.3, 0, wz + 0.45), 0.32, YELLOW)
-        lab.hide()
-        wout = self.matrix(g, m.w["Wout"], wx0, wz, 0.06, 0.2, "W_out", "{} x {}".format(self.d, self.V))
-        wout.hide()
-        lg = g.attachNewNode("logits")
-        zb = wz - self.d * 0.2 - 2.4
-        sc = 1.6 / max(1e-6, np.abs(logits).max())
-        for j, v in enumerate(logits):
-            h = v * sc
-            fill(lg, wx0 + j * 0.06, zb + min(0, h), wx0 + j * 0.06 + 0.045, zb + max(0, h),
-                 YELLOW if j == int(np.argmax(logits)) else BLUE, 0.9, y=0)
-        text(lg, "{} scores (logits), one per vocabulary token".format(self.V), Point3(wx0, 0, zb - 2.0), 0.28, GREY,
-             align=TextNode.ALeft)
-        lg.hide()
+        xl = T["x_final"][-1]
+        logits, probs = T["logits"], T["probs"]
+        row, WO, lg, X3 = L["row"], L["WOUT"], L["logit"], L["X3"]
+        nd = self.row_node(xl, CD)
+        r = self.keep(self.mat(xl[None, :], row, scale=self.rs, hero=False))
+        rect(r, row.x0 - 0.08, row.z_bot + 0.02, row.x1 + 0.08, row.z_top - 0.02, YELLOW, 2.4, y=-0.02)
+        wout = self.keep(self.mat(m.w["Wout"], WO, hero=False, gapx=0.0))
+        lmat = self.keep(self.mat(logits[None, :], lg, scale=sc_of(logits), hero=False, gapx=0.0))
+        best = int(np.argmax(logits))
+        mark = self.root().attachNewNode("best")
+        rect(mark, lg.x0 + best * lg.cw - 0.06, lg.z_bot - 0.12, lg.x0 + (best + 1) * lg.cw + 0.06, lg.z_top + 0.12,
+             YELLOW, 2.0, y=-0.03)
+        text(mark, "'{}'".format(disp(m.vocab[best])), Point3(lg.x0 + (best + 0.5) * lg.cw, 0, lg.z_top + 0.35), 0.3,
+             YELLOW)
+        mark.hide()
+        self.keep(mark)
         top = np.argsort(-probs)[:5]
-        pg = g.attachNewNode("probs")
-        for r, j in enumerate(top):
-            z = wz - 0.3 - r * 0.8
-            text(pg, disp(m.vocab[j]), Point3(x + 7.6, 0, z), 0.4, WHITE, align=TextNode.ARight)
-            w = max(0.02, 5.5 * probs[j])
-            fill(pg, x + 7.9, z - 0.1, x + 7.9 + w, z + 0.42, YELLOW if r == 0 else BLUE, 0.9, y=0)
-            text(pg, "{:.2%}".format(probs[j]) if probs[j] >= 0.0001 else "<0.01%", Point3(x + 8.1 + w, 0, z), 0.32,
-                 GREY, align=TextNode.ALeft)
-        text(pg, "softmax -> probabilities", Point3(x + 5.0, 0, wz + 0.45), 0.34, GREY, align=TextNode.ALeft)
+        pg = self.root().attachNewNode("probs")
+        px = L["probs_x"]
+        text(pg, "softmax -> probabilities", Point3(px - 2.2, 0, row.z_top + 1.4), 0.42, GREY, align=TextNode.ALeft)
+        for k, j in enumerate(top):
+            z = row.zc + 0.5 - k * 0.9
+            text(pg, disp(m.vocab[j]), Point3(px - 0.2, 0, z - 0.15), 0.44, WHITE, align=TextNode.ARight)
+            wdt = max(0.03, 5.0 * probs[j])
+            fill(pg, px, z - 0.3, px + wdt, z + 0.3, YELLOW if k == 0 else BLUE, 0.9, y=0)
+            text(pg, "{:.1%}".format(probs[j]) if probs[j] >= 0.001 else "<0.1%", Point3(px + wdt + 0.2, 0, z - 0.13),
+                 0.34, GREY, align=TextNode.ALeft)
         pg.hide()
-        seq = Sequence(Func(self.app.ui.arch.set_layer, "x 2 layers"), self.mapkey("linear"), self.dim(self.g_l2), self.move_hw(x, 1.4),
-                       fade_out(self.hw.label, 0.3),
-                       self.go(x + 1.5, -0.4, 31), drop, show_and_fade(lab, 0.2), show_and_fade(wout, 0.5), Wait(0.3),
-                       show_and_fade(lg, 0.7), Wait(0.5), self.mapkey("softmax", "output"), show_and_fade(pg, 0.5),
+        self.keep(pg)
+        info = self.note("only <ai>'s row:  (1 × {}) · ({} × {}) = (1 × {})\none score for every token the model knows"
+                         .format(self.d, self.d, self.V, self.V), WO.xc, WO.z_bot - 1.9, 0.36, WHITE, TextNode.ACenter)
+        hz = X3.z_top - self.hi * RH
+        seq = Sequence(Func(self.app.ui.arch.set_layer, "x 2 layers"), self.mapkey("linear"),
+                       self.go(X3.x0 - 1.0, lg.x1 + 1.0, WO.z_bot - 3.0, WO.z_top + 1.6),
+                       self.fly(nd, (X3.x0, 0, hz), (row.x0, 0, row.z_top), 1.2), show_fade(r, 0.2),
+                       show_fade(wout, 0.5), Wait(0.4), show_fade(lmat, 0.6), show_fade(info, 0.3), Wait(1.2),
+                       self.go(lg.x0 - 1.0, px + 8.0, WO.z_bot - 2.0, WO.z_top + 1.6),
+                       show_fade(mark, 0.3), self.mapkey("softmax", "output"), Wait(0.3), show_fade(pg, 0.5),
                        self.track(xl, "used for the prediction"))
-        best = m.vocab[int(top[0])]
         extra = (" (Almost 100%: this tiny model learned these few conversations by heart - big models are much less "
                  "certain.)" if probs[top[0]] > 0.99 else "")
-        return ("OUTPUT: only <ai>'s column - the one we followed all the way - is used now. It drops into W_out, "
-                "giving one score for each of the {} tokens; softmax turns scores into probabilities. Winner: '{}' "
-                "({:.1%}).".format(self.V, disp(best), probs[top[0]]) + extra, seq)
+        return ("STEP 13, OUTPUT: only <ai>'s row - the yellow row we followed all the way - is used now. One last "
+                "matrix multiplication with W_out gives one score for each of the {} tokens the model knows; softmax "
+                "turns the scores into probabilities. Winner: '{}' ({:.1%}).".format(
+                    self.V, disp(m.vocab[int(top[0])]), probs[top[0]]) + extra, seq)
 
-    # ------------------------------------------------------------ deep dive OFF: one quick pass
+    # ================================================================== deep dive OFF
     def s_quick(self):
-        hw = self.hw
-        steps = Sequence()
-        for l, LT in enumerate(self.T["layers"]):
-            for key, mk, label, where, xs in (("x1", "attn", "layer {}: after attention + Add & Norm", "attention",
-                                               S_CAT if l == 0 else S_L2 - 8),
-                                              ("x_out", "ffn", "layer {} output", "feed-forward",
-                                               S_ADD2 if l == 0 else S_L2)):
-                steps.append(Sequence(self.mapkey(mk), self.move_hw(xs, 1.0), self.mapkey("add1" if key == "x1" else "add2"),
-                                      hw.morph(LT[key], label.format(l + 1)),
-                                      self.track(LT[key][self.hi], "layer {}: {}".format(l + 1, where)), Wait(0.5)))
-        return ("Inside the Transformer (deep dive OFF - press D for every detail): the highway passes 2 layers; in "
-                "each, attention lets tokens exchange information and the feed-forward network processes each token. "
-                "Follow the yellow <ai> column and the tracker.", steps)
+        """Build steps 3-12 at once and fly the camera along the finished strip."""
+        start = len(self.persist)
+        for f in (self.s_qkv, self.s_scores, self.s_softmax, self.s_weighted, self.s_head2, self.s_concat,
+                  self.s_add1, self.s_ffn, self.s_add2, self.s_layer2):
+            f()
+        nodes = self.persist[start:]
+        L = self.L
+        cams = [(L["X"].x0 - 1, L["O1"].x1 + 2), (L["O1"].x0 - 1, L["X1"].x1 + 1), (L["X1"].x0 - 1, L["X2"].x1 + 1),
+                (L["X2"].x0 - 1, L["X3"].x1 + 1)]
+
+        def show_all():
+            for nd in nodes:
+                nd.show()
+                nd.setColorScale(1, 1, 1, 1)
+        seq = Sequence(self.mapkey("attn"), Func(show_all),
+                       *[Sequence(self.go(a, b, self.bot_z, self.top_z), Wait(1.8)) for a, b in cams])
+        seq.append(self.track(self.T["layers"][1]["x_out"][self.hi], "end of layer 2"))
+        return ("Inside the Transformer (deep dive OFF - press D to see every step): attention lets the token rows "
+                "exchange information, feed forward processes each row, and that twice (2 layers). Follow the "
+                "yellow <ai> row.", seq)

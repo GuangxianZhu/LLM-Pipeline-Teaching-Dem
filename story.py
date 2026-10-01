@@ -9,7 +9,7 @@ and the final answer. The tools are real Python too.
 
 Board regions (the camera flies between them):
   A        context and tokens
-  row -40  inside the Transformer (see tf_steps.py)
+  x 40-230 inside the Transformer: one fixed left-to-right data flow (see tf_steps.py)
   P        prediction loop: context strip -> Transformer -> next-token probabilities
   T        the program (harness) and the four real tools
 """
@@ -89,9 +89,9 @@ class Story(TransformerSteps):
               Step("Embedding", self.s_embed), Step("Embedding", self.s_position)]
         if self.deep:
             st += [Step("Attention", self.s_qkv), Step("Attention", self.s_scores),
-                   Step("Attention", self.s_weighted), Step("Attention", self.s_head2),
-                   Step("Attention", self.s_concat), Step("Add & Norm", self.s_residual),
-                   Step("Add & Norm", self.s_norm), Step("Feed Fwd", self.s_ffn),
+                   Step("Attention", self.s_softmax), Step("Attention", self.s_weighted),
+                   Step("Attention", self.s_head2), Step("Attention", self.s_concat),
+                   Step("Add & Norm", self.s_add1), Step("Feed Fwd", self.s_ffn),
                    Step("Add & Norm", self.s_add2), Step("Attention", self.s_layer2)]
         else:
             st += [Step("Attention", self.s_quick)]

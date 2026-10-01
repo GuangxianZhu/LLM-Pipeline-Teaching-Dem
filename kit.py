@@ -28,7 +28,8 @@ PINK = (0.93, 0.47, 0.66, 1)
 PURPLE = (0.60, 0.50, 0.95, 1)
 EDGE_RED = (0.93, 0.42, 0.38, 1)
 EDGE_BLUE = (0.33, 0.72, 0.88, 1)
-TOKEN_COLORS = [BLUE, YELLOW, GREEN, RED, PINK, TEAL, GOLD, PURPLE]
+SALMON = (0.98, 0.70, 0.60, 1)
+TOKEN_COLORS = [BLUE, SALMON, GREEN, RED, PINK, TEAL, GOLD, PURPLE]   # no yellow: yellow = the followed token
 
 FONTS = {
     "serif": ["C:/Windows/Fonts/cambria.ttc", "C:/Windows/Fonts/times.ttf",
@@ -379,7 +380,8 @@ def value_color(v, scale=1.0):
     return (0.10 + 0.20 * a, 0.10 + 0.52 * a, 0.12 + 0.86 * a, 1)
 
 
-def heatmap(parent, M, x0, z0, cw, ch, scale=1.0, gap=0.12, y=0.0, colors=None):
+def heatmap(parent, M, x0, z0, cw, ch, scale=1.0, gap=0.12, y=0.0, colors=None, gapx=None,
+            nan_color=(0.04, 0.04, 0.05, 1)):
     """
     Draw matrix M (rows x cols) as coloured cells in the board plane, ONE mesh.
     Cell (r, c) has its top-left corner at (x0 + c*cw, z0 - r*ch). Returns the NodePath.
@@ -393,13 +395,13 @@ def heatmap(parent, M, x0, z0, cw, ch, scale=1.0, gap=0.12, y=0.0, colors=None):
     vw = GeomVertexWriter(vd, "vertex")
     cwr = GeomVertexWriter(vd, "color")
     tris = GeomTriangles(Geom.UHStatic)
-    gx, gz = cw * gap, ch * gap
+    gx, gz = cw * (gap if gapx is None else gapx), ch * gap
     i = 0
     fn = colors or (lambda v: value_color(v, scale))
     for r in range(R):
         for c in range(C):
             v = M[r, c]
-            col = (0.04, 0.04, 0.05, 1) if not _np.isfinite(v) else fn(v)
+            col = nan_color if not _np.isfinite(v) else fn(v)
             xa, xb = x0 + c * cw + gx / 2, x0 + (c + 1) * cw - gx / 2
             za, zb = z0 - (r + 1) * ch + gz / 2, z0 - r * ch - gz / 2
             for (px, pz) in ((xa, za), (xb, za), (xb, zb), (xa, zb)):
