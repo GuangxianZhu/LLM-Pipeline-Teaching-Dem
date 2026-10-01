@@ -35,7 +35,7 @@ Keys:  Space = next step   A = auto play   1-7 = pick a question   D = deep dive
 
 Charts and pictures made by the demo are saved in the "outputs" folder next to the .exe.
 If the program does not start, send the teacher this file:
-    %APPDATA%\\LLMPipelineDemo\\output.log
+    %LOCALAPPDATA%\\LLMPipelineDemo\\output.log
 """
 
 

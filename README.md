@@ -28,7 +28,7 @@ python build_windows.py          # -> build/win_amd64/  and  dist/LLMPipelineDem
 ```
 
 `LLMPipelineDemo.exe --selftest` plays every question quickly and reports PASSED / FAILED.
-Errors of the .exe go to `%APPDATA%\LLMPipelineDemo\output.log`.
+Errors of the .exe go to `%LOCALAPPDATA%\LLMPipelineDemo\output.log`.
 
 ## Controls
 
