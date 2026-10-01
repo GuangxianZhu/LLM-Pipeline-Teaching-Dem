@@ -1,0 +1,3 @@
+SC1 clean recipe (demo)
+NH4OH:H2O2:H2O = 1:1:5
+65 C, 10 min
