@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
+# 中英文切换：Claude 改了这个文件（--lang、L 键、界面文字、实时切换 set_language）
 """
 LLM Pipeline Demo - 3Blue1Brown-style edition.
 How "what you say" becomes tokens, vectors, attention, a tool call, real code, and an answer.
@@ -10,10 +11,12 @@ Needs: pip install panda3d matplotlib
 Keys:  Space / Right = next step (skip animation if still playing)    A = auto play
        1-7 = pick a question     R = restart     + / - = speed     D = deep dive on/off
        C = camera follow on/off  G = glow on/off  H = hide/show panels
+       L = language English / Chinese   (start in Chinese: python main.py --lang zh)
        Right mouse drag = rotate   Mouse wheel = zoom
 """
 import math
 import os
+import random
 import sys
 
 from panda3d.core import loadPrcFileData
@@ -37,18 +40,19 @@ from direct.interval.IntervalGlobal import Func, Sequence                    # n
 from direct.showbase.ShowBase import ShowBase                                # noqa: E402
 from panda3d.core import AntialiasAttrib, Point3, TextNode                   # noqa: E402
 
+import i18n                                                                  # noqa: E402
 from archmap import ArchMap                                                  # noqa: E402
-from kit import GREY, WHITE, YELLOW, Fonts                                   # noqa: E402
+from i18n import t                                                           # noqa: E402
+from kit import GREY, WHITE, YELLOW, Fonts, display, ui_font, wrap_cjk      # noqa: E402
 from scenarios import SCENARIOS                                              # noqa: E402
 from cache_story import CacheStory                                         # noqa: E402
 from story import SEC_A, STAGES, Story                                       # noqa: E402
 
 PANEL_BG = (0.04, 0.04, 0.05, 0.9)
 LEFT_W, RIGHT_W = 0.74, 0.52          # screen space taken by the side panels (aspect2d units)
-SHORT = ["Hi! Who are you?", "What is 17% of 2350?", "Tank temperature chart",
-         "Cat in a cleanroom suit", "Count files (terminal)", "Files -> bar chart (2 tools)",
-         "Why so fast? (cache)"]
 BTN_BG = (0.13, 0.13, 0.15, 0.9)
+BTN_PITCH = 0.074                     # distance between the control buttons (9 of them now)
+CAPTION_WRAP = 44.0                   # width of a Chinese caption line in text units (English: wordwrap=48)
 ACCENT = (0.85, 0.62, 0.15, 1)
 
 
@@ -113,33 +117,35 @@ class OrbitCamera:
 class UI:
     def __init__(self, app):
         self.app = app
-        f = Fonts.serif
+        f = ui_font()
+        self.static = []          # (OnscreenText, i18n key): the labels that never change except with the language
         self.root = app.aspect2d.attachNewNode("ui")
         # ---- left: questions + conversation
         left = DirectFrame(parent=app.a2dTopLeft, frameColor=PANEL_BG, frameSize=(0, LEFT_W - 0.04, -1.96, 0),
                            pos=(0.02, 0, -0.02))
         self.left = left
-        OnscreenText("LLM Pipeline", parent=left, pos=(0.04, -0.075), scale=0.05, fg=WHITE, font=f,
-                     align=TextNode.ALeft)
+        self.static.append((OnscreenText(display(t("ui.title")), parent=left, pos=(0.04, -0.075), scale=0.05,
+                                         fg=WHITE, font=f, align=TextNode.ALeft, mayChange=True), "ui.title"))
         self.step_info = OnscreenText("", parent=left, pos=(0.04, -0.125), scale=0.028, fg=GREY, font=f,
                                       align=TextNode.ALeft, mayChange=True)
         self.q_buttons = []
         for i, sc in enumerate(SCENARIOS):
-            b = DirectButton(parent=left, text="{}   {}".format(i + 1, SHORT[i]), text_font=f,
+            b = DirectButton(parent=left, text=display(self._q_label(i)), text_font=f,
                              text_scale=0.026, text_align=TextNode.ALeft, text_fg=(0.92, 0.92, 0.95, 1),
                              text_pos=(0.02, -0.008), frameSize=(0, LEFT_W - 0.1, -0.024, 0.034), frameColor=BTN_BG,
                              relief=DGG.FLAT, pos=(0.03, 0, -0.18 - i * 0.064), command=app.pick, extraArgs=[i])
             self.q_buttons.append(b)
-        OnscreenText("model architecture", parent=left, pos=(0.04, -0.64), scale=0.026, fg=GREY, font=f,
-                     align=TextNode.ALeft)
+        self.static.append((OnscreenText(display(t("ui.arch_title")), parent=left, pos=(0.04, -0.64), scale=0.026,
+                                         fg=GREY, font=f, align=TextNode.ALeft, mayChange=True), "ui.arch_title"))
         self.arch = ArchMap(left, (0.36, 0, -0.73))
         self.arch.root.setScale(0.83)
-        OnscreenText("Conversation", parent=app.a2dTopRight, pos=(-RIGHT_W + 0.04, -0.75), scale=0.028,
-                     fg=GREY, font=f, align=TextNode.ALeft)
+        self.static.append((OnscreenText(display(t("ui.conversation")), parent=app.a2dTopRight,
+                                         pos=(-RIGHT_W + 0.04, -0.75), scale=0.028, fg=GREY, font=f,
+                                         align=TextNode.ALeft, mayChange=True), "ui.conversation"))
         self.chat_text = OnscreenText("", parent=app.a2dTopRight, pos=(-RIGHT_W + 0.04, -0.8), scale=0.024,
                                       fg=(0.9, 0.9, 0.93, 1), font=f, align=TextNode.ALeft, wordwrap=19.5,
                                       mayChange=True)
-        self.chat_lines = []
+        self.chat_lines = []                  # (who, message) - rendered in the current language
         # ---- bottom right: the tracker (the followed token's current 32 numbers)
         self.tracker = DirectFrame(parent=app.a2dBottomRight, frameColor=PANEL_BG,
                                    frameSize=(-RIGHT_W + 0.02, -0.02, 0.06, 0.86))
@@ -150,47 +156,80 @@ class UI:
         self.trk_hist = OnscreenText("", parent=self.tracker, pos=(-RIGHT_W + 0.2, 0.55), scale=0.022,
                                      fg=GREY, font=f, align=TextNode.ALeft, wordwrap=12.5, mayChange=True)
         self.trk_cells = None
-        self.trk_steps = []
+        self.trk_token = None
+        self.trk_steps = []                   # i18n keys of the places the followed token has been
         self.tracker.hide()
         # ---- top: stage chips
         self.chips = []
         self.stages = list(STAGES)
+        self.cur_stage = None
         for i, st in enumerate(STAGES):
-            c = OnscreenText(st, parent=app.a2dTopCenter, pos=((LEFT_W - RIGHT_W) / 2 + (i - 4) * 0.2, -0.07),
+            c = OnscreenText(display(t("stage." + st)), parent=app.a2dTopCenter,
+                             pos=((LEFT_W - RIGHT_W) / 2 + (i - 4) * 0.2, -0.07),
                              scale=0.03,
                              fg=(0.45, 0.45, 0.48, 1), font=f, mayChange=True)
             self.chips.append(c)
         # ---- right: controls
         self.btn = {}
-        specs = [("next", "Next  (Space)", app.next), ("auto", "Auto: OFF  (A)", app.toggle_auto),
-                 ("speed", "Speed 1x  (+/-)", app.cycle_speed), ("restart", "Restart  (R)", app.restart_demo),
-                 ("deep", "Deep dive: ON  (D)", app.toggle_deep), ("cam", "Camera: follow  (C)", app.toggle_follow),
-                 ("glow", "Glow: ON  (G)", app.toggle_glow), ("hide", "Hide panels  (H)", app.toggle_panels)]
+        specs = [("next", t("ui.btn.next"), app.next), ("auto", t("ui.btn.auto_off"), app.toggle_auto),
+                 ("speed", t("ui.btn.speed", speed=1.0), app.cycle_speed),
+                 ("restart", t("ui.btn.restart"), app.restart_demo),
+                 ("deep", t("ui.btn.deep_on"), app.toggle_deep), ("cam", t("ui.btn.cam_follow"), app.toggle_follow),
+                 ("glow", t("ui.btn.glow_on"), app.toggle_glow), ("hide", t("ui.btn.hide"), app.toggle_panels),
+                 ("lang", t("ui.btn.lang"), app.toggle_language)]
         for i, (key, label, cmd) in enumerate(specs):
-            b = DirectButton(parent=app.a2dTopRight, text=label, text_font=f, text_scale=0.028,
+            b = DirectButton(parent=app.a2dTopRight, text=display(label), text_font=f, text_scale=0.028,
                              text_fg=(1, 1, 1, 1), text_pos=(0, -0.01),
                              frameSize=(-0.23, 0.23, -0.03, 0.04),
                              frameColor=(0.2, 0.32, 0.5, 0.95) if key == "next" else BTN_BG,
-                             relief=DGG.FLAT, pos=(-0.27, 0, -0.07 - i * 0.082), command=cmd)
+                             relief=DGG.FLAT, pos=(-0.27, 0, -0.07 - i * BTN_PITCH), command=cmd)
             self.btn[key] = b
         # ---- bottom: caption (the explanation, like video subtitles)
         self.caption = OnscreenText("", pos=(0, -0.79), scale=0.04, fg=WHITE, bg=(0, 0, 0, 0.62),
-                                    font=Fonts.symbol, wordwrap=48, mayChange=True)
-        self.title_hint = OnscreenText("right-drag: rotate    wheel: zoom", parent=app.a2dBottomRight,
-                                       pos=(-0.04, 0.03), scale=0.024, fg=(0.35, 0.35, 0.38, 1), font=f,
-                                       align=TextNode.ARight)
+                                    font=ui_font("symbol"), wordwrap=48, mayChange=True)
+        self.static.append((OnscreenText(display(t("ui.hint")), parent=app.a2dBottomRight,
+                                         pos=(-0.04, 0.03), scale=0.024, fg=(0.35, 0.35, 0.38, 1), font=f,
+                                         align=TextNode.ARight, mayChange=True), "ui.hint"))
+
+    @staticmethod
+    def _q_label(i):
+        return "{}   {}".format(i + 1, t("ui.q.{}".format(i + 1)))
+
+    def relabel(self):
+        """The language changed: every label, button text and font. (The scene is rebuilt by App.)"""
+        f = ui_font()
+        for o, key in self.static:
+            o.setFont(f)
+            o.setText(display(t(key)))
+        for i, b in enumerate(self.q_buttons):
+            b["text_font"] = f
+            b["text"] = display(self._q_label(i))
+        for o in (self.step_info, self.chat_text, self.trk_title, self.trk_where, self.trk_hist):
+            o.setFont(f)
+        self.caption.setFont(ui_font("symbol"))
+        self.set_stages(self.stages)
+        self.set_stage(self.cur_stage)
+        self._show_chat()
+        self._show_tracker()
+
+    def set_info(self, key, **kw):
+        self.step_info.setText(display(t(key, **kw)))
 
     def set_stages(self, names):
         self.stages = list(names)
         for i, c in enumerate(self.chips):
-            c.setText(names[i] if i < len(names) else "")
+            c.setFont(ui_font())
+            c.setText(display(t("stage." + names[i])) if i < len(names) else "")
 
     def set_stage(self, stage):
+        self.cur_stage = stage
         for st, c in zip(self.stages, self.chips):
             c.setFg(YELLOW if st == stage else (0.45, 0.45, 0.48, 1))
 
     def set_caption(self, s):
-        self.caption.setText(s)
+        if i18n.LANG != "en":
+            s = wrap_cjk(s, CAPTION_WRAP, ui_font("symbol"))      # Panda3D breaks lines at spaces only
+        self.caption.setText(display(s, "symbol"))
 
     def mark_question(self, i):
         for k, b in enumerate(self.q_buttons):
@@ -200,15 +239,19 @@ class UI:
         s = " ".join(s.split())
         if len(s) > 120:
             s = s[:117] + "..."
-        self.chat_lines.append("{}:  {}".format(who, s))
-        self.chat_text.setText("\n\n".join(self.chat_lines[-3:]))
+        self.chat_lines.append((who, s))
+        self._show_chat()
+
+    def _show_chat(self):
+        lines = [t("ui.chat_line", who=t("ui.who." + who.lower()), msg=msg) for who, msg in self.chat_lines[-3:]]
+        self.chat_text.setText(display("\n\n".join(lines)))
 
     def clear_chat(self):
         self.chat_lines = []
         self.chat_text.setText("")
 
     def track(self, token, vec, scale, where):
-        """Show the followed token's current vector (one column of coloured cells)."""
+        """Show the followed token's current vector (one column of coloured cells). `where` is an i18n key."""
         from kit import heatmap
         import numpy as np
         if self.trk_cells:
@@ -216,30 +259,41 @@ class UI:
         v = np.asarray(vec)[None, :].T
         h = 0.68 / len(vec)
         self.trk_cells = heatmap(self.tracker, v, -RIGHT_W + 0.06, 0.76, 0.1, h, scale, gap=0.08)
-        self.trk_title.setText("following: {}".format(token))
+        self.trk_token = token
         if not self.trk_steps or self.trk_steps[-1] != where:
             self.trk_steps.append(where)
-        self.trk_where.setText("now:\n" + where)
-        past = self.trk_steps[:-1]
-        self.trk_hist.setText(("path so far:\n" + "\n".join(past[-9:])) if past else "")
+        self._show_tracker()
         self.tracker.show()
+
+    def _show_tracker(self):
+        if self.trk_token is None:
+            return
+        wrap = (lambda s, w: wrap_cjk(s, w, ui_font())) if i18n.LANG != "en" else (lambda s, w: s)
+        self.trk_title.setText(display(t("ui.trk.following", token=self.trk_token)))
+        self.trk_where.setText(display(wrap(t("ui.trk.now", where=t(self.trk_steps[-1])), 11)))
+        past = [t(k) for k in self.trk_steps[:-1]]
+        self.trk_hist.setText(display(wrap(t("ui.trk.path", path="\n".join(past[-9:])), 12.5)) if past else "")
 
     def reset_tracker(self):
         self.trk_steps = []
+        self.trk_token = None
         if self.trk_cells:
             self.trk_cells.removeNode()
             self.trk_cells = None
         self.tracker.hide()
 
     def set_btn(self, key, label):
-        self.btn[key]["text"] = label
+        self.btn[key]["text_font"] = ui_font()
+        self.btn[key]["text"] = display(label)
 
 
 # ====================================================================== app
 class App(ShowBase):
     SPEEDS = [0.5, 1.0, 1.5, 2.0, 3.0]
 
-    def __init__(self):
+    def __init__(self, lang=None):
+        if lang:
+            i18n.set_lang(lang)               # before anything is drawn
         ShowBase.__init__(self)
         self.setBackgroundColor(0, 0, 0, 1)
         self.render.setAntialias(AntialiasAttrib.MMultisample)
@@ -258,13 +312,17 @@ class App(ShowBase):
         self.speed_i = 1
         self.sc_i = 0
         self.panels_on = True
+        self.seed = None                      # seed of the current Engine run (question 1 samples its first word)
+        self.finished = False                 # the "Finished" message is showing
+        self.save_lang = True                 # write settings.json when the language changes
         for key, fn in [("space", self.next), ("arrow_right", self.next), ("a", self.toggle_auto),
                         ("r", self.restart_demo), ("d", self.toggle_deep), ("c", self.toggle_follow),
-                        ("g", self.toggle_glow), ("h", self.toggle_panels), ("+", self.speed_up),
+                        ("g", self.toggle_glow), ("h", self.toggle_panels), ("l", self.toggle_language), ("+", self.speed_up),
                         ("=", self.speed_up), ("-", self.speed_down), ("escape", sys.exit)]:
             self.accept(key, fn)
         for i in range(len(SCENARIOS)):
             self.accept(str(i + 1), self.pick, [i])
+        self.refresh_buttons()
         self.pick(0)
 
     @property
@@ -276,8 +334,13 @@ class App(ShowBase):
         self.sc_i = i
         self.restart_demo()
 
-    def restart_demo(self):
+    def restart_demo(self, keep_seed=False):
+        """(Re)build the current question from the first step. keep_seed: the same random draws as before
+        (question 1 picks Hi / Hello at random), used when only the language changed."""
         self._stop()
+        self.finished = False
+        if not keep_seed or self.seed is None:
+            self.seed = random.randrange(10 ** 6)
         if self.board:
             self.board.removeNode()
         self.board = self.render.attachNewNode("board")
@@ -290,15 +353,14 @@ class App(ShowBase):
         self.ui.set_stage(None)
         if sc.get("kind") == "cache":
             self.story = CacheStory(self, sc, self.deep)
-            intro = self.story.intro + "\nPress Space (or Next) to start."
+            intro = self.story.intro + t("ui.intro_cache_start")
         else:
-            self.story = Story(self, sc, self.deep)
-            intro = 'Question {}:  "{}"\nPress Space (or Next) to follow it through the model.'.format(
-                self.sc_i + 1, sc["prompt"])
+            self.story = Story(self, sc, self.deep, self.seed)
+            intro = t("ui.intro", i=self.sc_i + 1, prompt=sc["prompt"])
             self.cam_ctl.go_to(SEC_A + Point3(0, 0, 3.0), 0, 0, 24, force=True)
         self.steps = self.story.steps
         self.idx = -1
-        self.ui.step_info.setText("{} steps   -   Space = next,  A = auto".format(len(self.steps)))
+        self.ui.set_info("ui.info.start", n=len(self.steps))
         self.ui.set_caption(intro)
         if self.auto:
             self.taskMgr.doMethodLater(1.0, lambda t: self.next(), "auto-next")
@@ -314,7 +376,8 @@ class App(ShowBase):
             self.ival.finish()                     # skip to the end of this step
             return
         if self.idx + 1 >= len(self.steps):
-            self.ui.step_info.setText("Finished  -  pick another question (1-7) or Restart")
+            self.ui.set_info("ui.info.done")
+            self.finished = True
             return
         self.idx += 1
         st = self.steps[self.idx]
@@ -324,7 +387,7 @@ class App(ShowBase):
         caption, ival = st.build()
         self.ui.set_stage(st.stage)
         self.ui.set_caption(caption)
-        self.ui.step_info.setText("Step {} / {}   -   {}".format(self.idx + 1, len(self.steps), st.stage))
+        self.ui.set_info("ui.info.step", i=self.idx + 1, n=len(self.steps), stage=t("stage." + st.stage))
         self.ival = Sequence(ival, Func(self._done))
         self.ival.start(0.0, -1.0, self.speed)
 
@@ -335,14 +398,14 @@ class App(ShowBase):
     # ---- toggles
     def toggle_auto(self):
         self.auto = not self.auto
-        self.ui.set_btn("auto", "Auto: ON  (A)" if self.auto else "Auto: OFF  (A)")
+        self.ui.set_btn("auto", t("ui.btn.auto_on") if self.auto else t("ui.btn.auto_off"))
         if self.auto and not (self.ival and self.ival.isPlaying()):
             self.next()
         if not self.auto:
             self.taskMgr.remove("auto-next")
 
     def _apply_speed(self):
-        self.ui.set_btn("speed", "Speed {:g}x  (+/-)".format(self.speed))
+        self.ui.set_btn("speed", t("ui.btn.speed", speed=self.speed))
         if self.ival and self.ival.isPlaying():
             self.ival.setPlayRate(self.speed)
 
@@ -360,12 +423,12 @@ class App(ShowBase):
 
     def toggle_deep(self):
         self.deep = not self.deep
-        self.ui.set_btn("deep", "Deep dive: ON  (D)" if self.deep else "Deep dive: OFF  (D)")
+        self.ui.set_btn("deep", t("ui.btn.deep_on") if self.deep else t("ui.btn.deep_off"))
         self.restart_demo()
 
     def toggle_follow(self):
         self.cam_ctl.follow = not self.cam_ctl.follow
-        self.ui.set_btn("cam", "Camera: follow  (C)" if self.cam_ctl.follow else "Camera: free  (C)")
+        self.ui.set_btn("cam", t("ui.btn.cam_follow") if self.cam_ctl.follow else t("ui.btn.cam_free"))
 
     def toggle_glow(self):
         if self.glow:
@@ -374,7 +437,7 @@ class App(ShowBase):
         else:
             self.glow = bool(self.filters.setBloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.6, maxtrigger=1.0,
                                                    desat=0.1, intensity=1.4, size="medium"))
-        self.ui.set_btn("glow", "Glow: ON  (G)" if self.glow else "Glow: OFF  (G)")
+        self.ui.set_btn("glow", t("ui.btn.glow_on") if self.glow else t("ui.btn.glow_off"))
 
     def _frame(self):
         if self.panels_on:
@@ -390,24 +453,88 @@ class App(ShowBase):
         for n in [self.ui.left] + list(self.ui.btn.values()):
             n.show() if self.panels_on else n.hide()
         self.ui.btn["hide"].show()
-        self.ui.set_btn("hide", "Hide panels  (H)" if self.panels_on else "Show panels  (H)")
+        self.ui.set_btn("hide", t("ui.btn.hide") if self.panels_on else t("ui.btn.show"))
+
+    # ---- language
+    def refresh_buttons(self):
+        """Every button label again, from the current state (the state itself is never touched)."""
+        ui = self.ui
+        ui.set_btn("next", t("ui.btn.next"))
+        ui.set_btn("auto", t("ui.btn.auto_on") if self.auto else t("ui.btn.auto_off"))
+        ui.set_btn("speed", t("ui.btn.speed", speed=self.speed))
+        ui.set_btn("restart", t("ui.btn.restart"))
+        ui.set_btn("deep", t("ui.btn.deep_on") if self.deep else t("ui.btn.deep_off"))
+        ui.set_btn("cam", t("ui.btn.cam_follow") if self.cam_ctl.follow else t("ui.btn.cam_free"))
+        ui.set_btn("glow", t("ui.btn.glow_on") if self.glow else t("ui.btn.glow_off"))
+        ui.set_btn("hide", t("ui.btn.hide") if self.panels_on else t("ui.btn.show"))
+        ui.set_btn("lang", t("ui.btn.lang"))
+
+    def toggle_language(self):
+        self.set_language("zh" if i18n.LANG == "en" else "en")
+
+    def set_language(self, lang):
+        """Switch the language on the fly and stay on the same step."""
+        if lang not in i18n.LANGS:
+            return
+        i18n.set_lang(lang)
+        if self.save_lang:
+            i18n.save_lang(lang)
+        self.ui.relabel()
+        self.ui.arch.relabel()
+        self.refresh_buttons()
+        self._rebuild_scene()
+
+    def _rebuild_scene(self):
+        """The 3D texts are made when a step is built, so build the story again and fast-forward to the step we
+        were on (same question, same random seed, camera on the last step's view)."""
+        idx, finished, auto = self.idx, self.finished, self.auto
+        cam = self.cam_ctl
+        old_view = (list(cam.cur), list(cam.want))
+        self.auto = False                     # no auto-next while fast-forwarding
+        self.restart_demo(keep_seed=True)
+        for _ in range(idx + 1):
+            self.next()
+            if self.ival:
+                self.ival.finish()
+        if finished:
+            self.next()                       # shows the "Finished" message again
+        self.auto = auto
+        if cam.follow:
+            cam.cur = list(cam.want)          # no fly-over: the camera is already where the step ends
+        else:
+            cam.cur, cam.want = old_view
+        if auto:
+            self.taskMgr.doMethodLater(1.0 if idx < 0 else 2.4 / self.speed, lambda task: self.next(), "auto-next")
 
 
 def self_test(app):
-    """LLMPipelineDemo.exe --selftest : play every question (fast) and report, e.g. to check a new build."""
+    """LLMPipelineDemo.exe --selftest : play every question (fast) and report, e.g. to check a new build.
+    Halfway and at the end of every question it also switches the language and back: the step, the caption and
+    the random first word must be the same afterwards."""
     import traceback
+    app.save_lang = False
     ok = True
+    start_lang = i18n.LANG
+    other = "zh" if start_lang == "en" else "en"
     for deep in (True, False):
         if not deep:
             app.toggle_deep()
         for i in range(len(SCENARIOS)):
             app.pick(i)
             try:
-                for _ in range(len(app.steps)):
+                n = len(app.steps)
+                for k in range(n):
                     app.next()
                     if app.ival:
                         app.ival.finish()
                     app.taskMgr.step()
+                    if k in (n // 2, n - 1):
+                        before = (app.idx, app.ui.caption.getText(), app.ui.step_info.getText())
+                        app.set_language(other)
+                        assert app.idx == k and app.ui.caption.getText(), "language switch lost the step"
+                        app.set_language(start_lang)
+                        after = (app.idx, app.ui.caption.getText(), app.ui.step_info.getText())
+                        assert before == after, "language round trip changed the screen:\n{}\n{}".format(before, after)
                 print("selftest", "deep" if deep else "quick", i + 1, "ok", flush=True)
             except Exception:
                 traceback.print_exc()
@@ -416,8 +543,21 @@ def self_test(app):
     sys.exit(0 if ok else 1)
 
 
+def _arg_lang(argv):
+    """--lang zh   or   --lang=zh"""
+    for k, a in enumerate(argv):
+        if a == "--lang" and k + 1 < len(argv):
+            return argv[k + 1]
+        if a.startswith("--lang="):
+            return a.split("=", 1)[1]
+    return None
+
+
 if __name__ == "__main__":
-    app = App()
+    lang = _arg_lang(sys.argv)
+    if lang not in i18n.LANGS:                # no (valid) --lang: the saved choice, default English
+        lang = "en" if "--selftest" in sys.argv else i18n.load_lang()
+    app = App(lang)
     if "--selftest" in sys.argv:
         self_test(app)
     app.run()

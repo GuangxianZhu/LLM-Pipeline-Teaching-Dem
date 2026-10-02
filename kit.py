@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
+# 中英文切换：Claude 改了这个文件（CJK 字体、ui_font、wrap_cjk、text 的字体选择）
 """
 Drawing kit for the 3Blue1Brown-like look: black board, thin lines, serif text,
 vector arrows, number columns, glowing spheres. Everything is built from code.
 """
 import math
 import os
+import re
 
 from direct.interval.IntervalGlobal import LerpColorScaleInterval
-from panda3d.core import (CardMaker, Filename, Geom, GeomNode, GeomTriangles, GeomVertexData,
-                          GeomVertexFormat, GeomVertexWriter, LineSegs, Point3, TextNode,
-                          Texture, TransparencyAttrib, Vec3)
+from panda3d.core import (CardMaker, DynamicTextGlyph, Filename, Geom, GeomNode, GeomTriangles, GeomVertexData,
+                          GeomVertexFormat, GeomVertexWriter, LineSegs, Point3, TextNode, TextProperties,
+                          TextPropertiesManager, Texture, TransparencyAttrib, Vec3)
+
+import i18n
 
 # ------------------------------------------------------------------ palette
 WHITE = (1, 1, 1, 1)
@@ -47,11 +51,21 @@ FONTS = {
     "mono": ["C:/Windows/Fonts/consola.ttf", "C:/Windows/Fonts/cour.ttf",
              "/System/Library/Fonts/Menlo.ttc",
              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"],
+    # Chinese (Han) glyphs, used when the language is zh. The first existing file wins.
+    "cjk": ["C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/simhei.ttf",
+            "/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            # extra Linux fallbacks (after the required list)
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"],
 }
 
 
 class Fonts:
-    serif = italic = symbol = mono = None
+    serif = italic = symbol = mono = cjk = None
+    has_cjk = False
 
     @classmethod
     def load(cls, loader):
@@ -68,16 +82,117 @@ class Fonts:
         cls.italic = cls.italic or cls.serif
         cls.symbol = cls.symbol or cls.serif
         cls.mono = cls.mono or cls.serif
+        cls.has_cjk = cls.cjk is not None
+        cls.cjk = cls.cjk or cls.serif                  # no Chinese font found: fall back (squares, but no crash)
+        # fonts usable inside a string with the markup  \1cjk\1...\2  and  \1sym\1...\2  (see fx)
+        tpm = TextPropertiesManager.getGlobalPtr()
+        for name, font in (("cjk", cls.cjk), ("sym", cls.symbol)):
+            if font:
+                props = TextProperties()
+                props.setFont(font)
+                tpm.setProperties(name, props)
 
 
 # ------------------------------------------------------------------ text + lines
+_HAS = {}
+_CJK_RE = re.compile("[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]")
+
+
+def _has_glyph(font, ch):
+    key = (id(font), ch)
+    if key not in _HAS:
+        _HAS[key] = ch.isspace() or isinstance(font.getGlyph(ord(ch)), DynamicTextGlyph)
+    return _HAS[key]
+
+
+def fx(s, font):
+    """zh only: a character the base font cannot draw (e.g. the superscript T of K-transpose in a Chinese font)
+    is wrapped in text markup that switches to a font that has it. English text is returned untouched."""
+    if i18n.LANG == "en" or not font or s.isascii():
+        return s
+    out, run, run_fb = [], [], None
+
+    def flush():
+        if run:
+            out.append("\1{0}\1{1}\2".format(run_fb, "".join(run)) if run_fb else "".join(run))
+            run.clear()
+    for ch in s:
+        fb = None
+        if ord(ch) >= 0x250 and ch not in "\x01\x02" and not _has_glyph(font, ch):
+            if font is not Fonts.cjk and Fonts.has_cjk and _has_glyph(Fonts.cjk, ch):
+                fb = "cjk"
+            elif font is not Fonts.symbol and _has_glyph(Fonts.symbol, ch):
+                fb = "sym"
+        if fb != run_fb:
+            flush()
+            run_fb = fb
+        run.append(ch)
+    flush()
+    return "".join(out)
+
+
+def ui_font(kind="serif"):
+    """Font for interface text: the Chinese font when the language is zh, otherwise Fonts.<kind>."""
+    return Fonts.cjk if i18n.LANG != "en" and Fonts.cjk else getattr(Fonts, kind)
+
+
+def display(s, kind="serif"):
+    """A string ready for an OnscreenText / DirectButton that uses ui_font(kind)."""
+    return fx(s, ui_font(kind))
+
+
+def _scene_font(font, s):
+    """Scene text keeps its usual font, except a string that contains Chinese: that one needs the Chinese font."""
+    if (i18n.LANG != "en" and Fonts.cjk and font in (None, Fonts.serif, Fonts.italic, Fonts.symbol)
+            and _CJK_RE.search(s)):
+        return Fonts.cjk
+    return font or Fonts.serif
+
+
+_UNIT = re.compile("[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]|\\s+|[^\\s\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f]+")
+_NO_LINE_START = set("，。、；：！？）】」』》”’…％,.;:!?)]}%")
+_UNIT_W = {}
+
+
+def _unit_width(u, font):
+    key = (id(font), u)
+    if key not in _UNIT_W:
+        tn = TextNode("meas")
+        tn.setFont(font)
+        tn.setText(fx(u, font))
+        _UNIT_W[key] = tn.getWidth()
+    return _UNIT_W[key]
+
+
+def wrap_cjk(s, width=44.0, font=None):
+    """Insert line breaks into Chinese text (Panda3D only breaks lines at spaces). `width` is in text units, the
+    same unit as OnscreenText(wordwrap=...); one Chinese character is 1.0 wide. Existing newlines are kept,
+    a line never breaks inside an English word and never starts with closing punctuation."""
+    font = font or ui_font("symbol")
+    lines_out = []
+    for para in s.split("\n"):
+        line, w = "", 0.0
+        for u in _UNIT.findall(para):
+            uw = _unit_width(u, font) if font else len(u)
+            if line and w + uw > width and not u.isspace() and u[0] not in _NO_LINE_START:
+                lines_out.append(line.rstrip())
+                line, w = "", 0.0
+            if not line and u.isspace():
+                continue
+            line += u
+            w += uw
+        lines_out.append(line.rstrip())
+    return "\n".join(lines_out)
+
+
 def text(parent, s, pos, scale, color=WHITE, font=None, align=TextNode.ACenter, wrap=None):
     tn = TextNode("t")
-    tn.setText(s)
+    font = _scene_font(font, s)
+    tn.setText(fx(s, font))
     tn.setAlign(align)
     tn.setTextColor(*color)
-    if font or Fonts.serif:
-        tn.setFont(font or Fonts.serif)
+    if font:
+        tn.setFont(font)
     if wrap:
         tn.setWordwrap(wrap)
     np = parent.attachNewNode(tn)
@@ -89,10 +204,10 @@ def text(parent, s, pos, scale, color=WHITE, font=None, align=TextNode.ACenter, 
 
 def text_width(s, font=None):
     tn = TextNode("m")
-    f = font or Fonts.serif
+    f = _scene_font(font, s)
     if f:
         tn.setFont(f)
-    tn.setText(s)
+    tn.setText(fx(s, f))
     return tn.getWidth()
 
 

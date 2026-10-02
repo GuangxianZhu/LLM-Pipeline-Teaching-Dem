@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
+# 中英文切换：Claude 改了这个文件（方框文字改用 i18n.t，新增 relabel）
 """
 The always-visible architecture map (the classic GPT / decoder-only Transformer diagram).
 Bottom to top, like in the papers. highlight(key) lights up the block being shown.
@@ -8,7 +9,8 @@ from direct.gui.DirectGui import DirectFrame
 from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import LineSegs, TextNode
 
-from kit import Fonts
+from i18n import t
+from kit import display, ui_font
 
 BOX_BG = (0.12, 0.12, 0.14, 0.95)
 HOT_BG = (0.55, 0.42, 0.08, 0.95)
@@ -16,18 +18,18 @@ EDGE = (0.5, 0.5, 0.55, 1)
 TXT = (0.85, 0.85, 0.9, 1)
 DIMTXT = (0.55, 0.55, 0.6, 1)
 
-# key, label, x-centre, z-centre, width, height   (in the map's own units)
+# key, x-centre, z-centre, width, height   (in the map's own units); the label is t("arch.<key>")
 BLOCKS = [
-    ("output", "next-token probabilities", 0.0, 0.00, 0.56, 0.07),
-    ("softmax", "Softmax", 0.0, -0.13, 0.34, 0.07),
-    ("linear", "Linear  (x W_out)", 0.0, -0.26, 0.40, 0.07),
-    ("add2", "Add & Norm", 0.0, -0.43, 0.42, 0.07),
-    ("ffn", "Feed Forward", 0.0, -0.56, 0.42, 0.08),
-    ("add1", "Add & Norm", 0.0, -0.73, 0.42, 0.07),
-    ("attn", "Masked Multi-Head\nAttention", 0.0, -0.88, 0.42, 0.11),
-    ("pos", "Positional\nEncoding", -0.235, -1.07, 0.17, 0.10),
-    ("embed", "Token Embedding", 0.06, -1.20, 0.40, 0.07),
-    ("input", "input tokens", 0.06, -1.33, 0.40, 0.07),
+    ("output", 0.0, 0.00, 0.56, 0.07),
+    ("softmax", 0.0, -0.13, 0.34, 0.07),
+    ("linear", 0.0, -0.26, 0.40, 0.07),
+    ("add2", 0.0, -0.43, 0.42, 0.07),
+    ("ffn", 0.0, -0.56, 0.42, 0.08),
+    ("add1", 0.0, -0.73, 0.42, 0.07),
+    ("attn", 0.0, -0.88, 0.42, 0.11),
+    ("pos", -0.235, -1.07, 0.17, 0.10),
+    ("embed", 0.06, -1.20, 0.40, 0.07),
+    ("input", 0.06, -1.33, 0.40, 0.07),
 ]
 
 
@@ -36,14 +38,14 @@ class ArchMap:
         self.root = parent.attachNewNode("archmap")
         self.root.setPos(pos)
         self.boxes, self.labels = {}, {}
-        f = Fonts.serif
+        f = ui_font()
         ls = LineSegs()
         ls.setThickness(1.4)
         ls.setColor(*EDGE)
         # main arrows (bottom -> top)
         chain = [("input", "embed"), ("embed", "plus"), ("plus", "attn"), ("attn", "add1"), ("add1", "ffn"),
                  ("ffn", "add2"), ("add2", "linear"), ("linear", "softmax"), ("softmax", "output")]
-        geo = {k: (x, z, w, h) for k, _, x, z, w, h in BLOCKS}
+        geo = {k: (x, z, w, h) for k, x, z, w, h in BLOCKS}
         geo["plus"] = (0.06, -1.07, 0.04, 0.04)
         for a, b in chain:
             xa, za, wa, ha = geo[a]
@@ -80,17 +82,20 @@ class ArchMap:
             frame.moveTo(a[0], 0, a[1])
             frame.drawTo(b[0], 0, b[1])
         self.root.attachNewNode(frame.create())
-        self.layer_text = OnscreenText("x 2 layers", parent=self.root, pos=(-0.29, -0.395), scale=0.03,
+        self.layer_key = "arch.layers"
+        self.layer_text = OnscreenText(display(t(self.layer_key)), parent=self.root, pos=(-0.29, -0.395), scale=0.03,
                                        fg=DIMTXT, font=f, align=TextNode.ALeft, mayChange=True)
         plus = OnscreenText("+", parent=self.root, pos=(0.06, -1.083), scale=0.05, fg=TXT, font=f)
         self.plus = plus
-        for key, label, x, z, w, h in BLOCKS:
+        self.geo = geo
+        for key, x, z, w, h in BLOCKS:
             b = DirectFrame(parent=self.root, frameColor=BOX_BG, frameSize=(-w / 2, w / 2, -h / 2, h / 2),
                             pos=(x, 0, z))
+            label = t("arch." + key)
             lines = label.count("\n") + 1
-            t = OnscreenText(label, parent=self.root, pos=(x, z - 0.01 + 0.014 * (lines - 1)), scale=0.026,
-                             fg=TXT, font=f, mayChange=True)
-            self.boxes[key], self.labels[key] = b, t
+            lab = OnscreenText(display(label), parent=self.root, pos=(x, z - 0.01 + 0.014 * (lines - 1)),
+                               scale=0.026, fg=TXT, font=f, mayChange=True)
+            self.boxes[key], self.labels[key] = b, lab
         self.current = None
 
     @staticmethod
@@ -106,8 +111,23 @@ class ArchMap:
             self.labels[k].setFg((1, 1, 1, 1) if hot else TXT)
         self.current = keys
 
-    def set_layer(self, s):
-        self.layer_text.setText(s)
+    def set_layer(self, key):
+        """key: an i18n key ("arch.layers" or "arch.layer2")."""
+        self.layer_key = key
+        self.layer_text.setText(display(t(key)))
+
+    def relabel(self):
+        """New language: every box label, the layer text, and the font."""
+        f = ui_font()
+        for key, x, z, w, h in BLOCKS:
+            label = t("arch." + key)
+            lab = self.labels[key]
+            lab.setFont(f)
+            lab.setText(display(label))
+            lab.setPos(x, z - 0.01 + 0.014 * label.count("\n"))
+        self.layer_text.setFont(f)
+        self.layer_text.setText(display(t(self.layer_key)))
+        self.plus.setFont(f)
 
     def show(self):
         self.root.show()

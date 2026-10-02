@@ -31,7 +31,8 @@ HOW_TO = """LLM Pipeline Demo  -  how to run
    (If Windows SmartScreen says "Windows protected your PC": click "More info" -> "Run anyway".)
 
 Keys:  Space = next step   A = auto play   1-7 = pick a question   D = deep dive on/off
-       R = restart   H = hide panels   right-drag / wheel = rotate / zoom
+       R = restart   H = hide panels   L = language English / Chinese
+       right-drag / wheel = rotate / zoom
 
 Charts and pictures made by the demo are saved in the "outputs" folder next to the .exe.
 If the program does not start, send the teacher this file:

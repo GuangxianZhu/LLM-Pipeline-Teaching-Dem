@@ -92,6 +92,7 @@ python main.py
 | C | Camera follow on/off (off = explore freely) |
 | G | Glow on/off (turn off on slow computers) |
 | H | Hide/show the side panels (for projecting) |
+| L | Language English / 中文 (switches instantly and stays on the same step; remembered in `settings.json`; start in Chinese with `python main.py --lang zh`) |
 | Right-drag / wheel | Rotate / zoom |
 
 ## What students see

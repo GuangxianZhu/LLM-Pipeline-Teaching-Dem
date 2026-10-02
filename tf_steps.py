@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
+# 中英文切换：Claude 改了这个文件（说明文字、字幕、追踪标签改用 i18n.t）
 """
 Inside the Transformer as ONE FIXED DATA FLOW, left to right (the plan is docs/flow.drawio).
 
@@ -17,6 +18,7 @@ from direct.interval.IntervalGlobal import (Func, LerpColorScaleInterval, LerpFu
                                             LerpPosInterval, Parallel, Sequence, Wait)
 from panda3d.core import Point3, TextNode
 
+from i18n import t
 from kit import (BLUE, GREY, ORANGE, TOKEN_COLORS, WHITE, YELLOW, Fonts, arrow2d, disc, fade_in, fade_out, fill,
                  heatmap, lines, rect, text)
 
@@ -191,6 +193,7 @@ class TransformerSteps:
         return Func(self.app.ui.arch.highlight, *keys)
 
     def track(self, vec, where):
+        """`where` is an i18n key (the tracker panel translates it)."""
         return Func(self.app.ui.track, disp(self.ttoks[self.hi]), vec, self.rs, where)
 
     def go(self, x0, x1, z0, z1, h=0.0, p=0.0):
@@ -277,13 +280,15 @@ class TransformerSteps:
         g = self.root().attachNewNode("map")
         d, dh, ff = self.d, self.dh, self.ff
         sh = lambda a, b: "{} × {}".format(a, b)  # noqa: E731
-        for key, lab, shp in (("E", "E", sh(n, d)), ("P", "P  (position)", sh(n, d)), ("X", "X", sh(n, d)),
+        for key, lab, shp in (("E", "E", sh(n, d)), ("P", t("tf.map.P"), sh(n, d)), ("X", "X", sh(n, d)),
                               ("Q", "Q", sh(n, dh)), ("K", "K", sh(n, dh)), ("V", "V", sh(n, dh)),
-                              ("S", "scores", sh(n, n)), ("A", "weights A", sh(n, n)), ("O1", "head 1 out", sh(n, dh)),
-                              ("S2", "scores (head 2)", None), ("A2", "weights (head 2)", None),
-                              ("O2", "head 2 out", sh(n, dh)), ("C", "concat", sh(n, d)), ("D", "ΔX  (change)", sh(n, d)),
-                              ("X1", "X1", sh(n, d)), ("H", "hidden", sh(n, ff)), ("F", "F", sh(n, d)),
-                              ("X2", "X2  (layer 1 out)", sh(n, d)), ("X3", "X3  (final)", sh(n, d))):
+                              ("S", t("tf.map.S"), sh(n, n)), ("A", t("tf.map.A"), sh(n, n)),
+                              ("O1", t("tf.map.O1"), sh(n, dh)),
+                              ("S2", t("tf.map.S2"), None), ("A2", t("tf.map.A2"), None),
+                              ("O2", t("tf.map.O2"), sh(n, dh)), ("C", t("tf.map.C"), sh(n, d)),
+                              ("D", t("tf.map.D"), sh(n, d)),
+                              ("X1", "X1", sh(n, d)), ("H", t("tf.map.H"), sh(n, ff)), ("F", "F", sh(n, d)),
+                              ("X2", t("tf.map.X2"), sh(n, d)), ("X3", t("tf.map.X3"), sh(n, d))):
             self.frame(g, L[key], label=lab, shape=shp)
         for key, lab, shp in (("WQ", "W_Q", sh(d, dh)), ("WK", "W_K", sh(d, dh)), ("WV", "W_V", sh(d, dh)),
                               ("WO", "W_O", sh(d, d)), ("W1", "W1", sh(d, ff)), ("W2f", "W2", sh(ff, d)),
@@ -298,11 +303,11 @@ class TransformerSteps:
         text(g, "Q2  K2  V2", Point3(L["K2"].xc, 0, L["Q2"].z_bot - 0.55), 0.32, MAPTXT)
         b = L["W2"]
         rect(g, b.x0, b.z_bot, b.x1, b.z_top, (0.45, 0.6, 0.95, 1), 1.2)
-        text(g, "× its own\nW_Q, W_K, W_V", Point3(b.xc, 0, b.zc + 0.2), 0.28, (0.55, 0.68, 1.0, 1), Fonts.symbol)
-        text(g, "head 2", Point3(b.x0, 0, L["S2"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
-        text(g, "head 1", Point3(L["WQ"].x0, 0, L["Q"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
+        text(g, t("tf.map.own"), Point3(b.xc, 0, b.zc + 0.2), 0.28, (0.55, 0.68, 1.0, 1), Fonts.symbol)
+        text(g, t("tf.map.head2"), Point3(b.x0, 0, L["S2"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
+        text(g, t("tf.map.head1"), Point3(L["WQ"].x0, 0, L["Q"].z_top + 0.5), 0.4, MAPTXT, align=TextNode.ALeft)
         self.frame(g, L["table"])
-        text(g, "embedding table", Point3(L["table"].xc, 0, L["table"].z_bot - 0.5), 0.36, MAPTXT)
+        text(g, t("tf.map.table"), Point3(L["table"].xc, 0, L["table"].z_bot - 0.5), 0.36, MAPTXT)
         text(g, sh(self.V, d), Point3(L["table"].xc, 0, L["table"].z_bot - 0.9), 0.26, (0.45, 0.45, 0.5, 1),
              Fonts.symbol)
         for key in ("row", "logit"):
@@ -314,19 +319,19 @@ class TransformerSteps:
         for key in ("norm1", "norm2"):
             cx, cz = L[key]
             rect(g, cx - 0.7, cz - 0.38, cx + 0.7, cz + 0.38, LINE, 1.2)
-            text(g, "norm", Point3(cx, 0, cz - 0.12), 0.32, WHITE)
+            text(g, t("tf.map.norm"), Point3(cx, 0, cz - 0.12), 0.32, WHITE)
         x0, x1 = L["L2"]
         zc = L["X2"].zc
         rect(g, x0, zc - 3.0, x1, zc + 3.0, (0.45, 0.75, 0.45, 1), 1.6)
-        text(g, "layer 2", Point3((x0 + x1) / 2, 0, zc + 1.6), 0.5, (0.6, 0.9, 0.6, 1))
-        text(g, "the same steps again\n(attention, add & norm,\nfeed forward, add & norm)\nwith its own weights",
+        text(g, t("tf.map.layer2"), Point3((x0 + x1) / 2, 0, zc + 1.6), 0.5, (0.6, 0.9, 0.6, 1))
+        text(g, t("tf.map.layer2_note"),
              Point3((x0 + x1) / 2, 0, zc + 0.7), 0.27, GREY)
         lx0, lx1 = L["fan"] - 0.4, L["X2"].x1 + 0.6
         rect(g, lx0, self.bot_z + 0.3, lx1, self.top_z - 0.3, (0.3, 0.5, 0.3, 1), 1.0)
-        text(g, "layer 1", Point3(lx0 + 0.3, 0, self.top_z - 0.9), 0.45, (0.5, 0.8, 0.5, 1), align=TextNode.ALeft)
-        text(g, "ATTENTION", Point3(L["S"].x0, 0, self.top_z - 0.9), 0.45, MAPTXT, align=TextNode.ALeft)
-        text(g, "FEED FORWARD", Point3(L["W1"].x0, 0, L["W1"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
-        text(g, "OUTPUT", Point3(L["row"].x0, 0, L["WOUT"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
+        text(g, t("tf.map.layer1"), Point3(lx0 + 0.3, 0, self.top_z - 0.9), 0.45, (0.5, 0.8, 0.5, 1), align=TextNode.ALeft)
+        text(g, t("tf.map.attention"), Point3(L["S"].x0, 0, self.top_z - 0.9), 0.45, MAPTXT, align=TextNode.ALeft)
+        text(g, t("tf.map.ffn"), Point3(L["W1"].x0, 0, L["W1"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
+        text(g, t("tf.map.output"), Point3(L["row"].x0, 0, L["WOUT"].z_top + 1.6), 0.45, MAPTXT, align=TextNode.ALeft)
         self._connectors(g)
         g.hide()
         return g
@@ -381,13 +386,13 @@ class TransformerSteps:
         rx = L["X"].xc
         lines(g, [[(rx, 0, L["X"].z_top + 0.1), (rx, 0, r1), (L["plus1"][0], 0, r1)]], RESID, 1.8)
         arrow2d(g, (L["plus1"][0], 0, r1), (L["plus1"][0], 0, L["plus1"][1] + 0.48), RESID, 1.8, 0.18)
-        text(g, "residual: X skips attention and is ADDED back", Point3((rx + L["plus1"][0]) / 2, 0, r1 + 0.25),
+        text(g, t("tf.map.res1"), Point3((rx + L["plus1"][0]) / 2, 0, r1 + 0.25),
              0.34, RESID)
         r2 = L["W2f"].z_top + 0.8
         x1c = L["X1"].xc
         lines(g, [[(x1c, 0, L["X1"].z_top + 0.1), (x1c, 0, r2), (L["plus2"][0], 0, r2)]], RESID, 1.8)
         arrow2d(g, (L["plus2"][0], 0, r2), (L["plus2"][0], 0, L["plus2"][1] + 0.48), RESID, 1.8, 0.18)
-        text(g, "residual: X1 skips feed forward", Point3((x1c + L["plus2"][0]) / 2, 0, r2 + 0.25), 0.34, RESID)
+        text(g, t("tf.map.res2"), Point3((x1c + L["plus2"][0]) / 2, 0, r2 + 0.25), 0.34, RESID)
         self.res_z = (r1, r2)
 
     def overview(self):
@@ -402,11 +407,11 @@ class TransformerSteps:
         ids = [int(t) for t in T["ids"]]
         tb = L["table"]
         words = r.attachNewNode("words")
-        for i, t in enumerate(self.ttoks):
+        for i, tk in enumerate(self.ttoks):
             c = YELLOW if i == self.hi else WHITE
-            text(words, disp(t), Point3(L["words_x"], 0, L["E"].rz(i) - 0.11), 0.3, c, align=TextNode.ARight)
+            text(words, disp(tk), Point3(L["words_x"], 0, L["E"].rz(i) - 0.11), 0.3, c, align=TextNode.ARight)
             text(words, str(ids[i]), Point3(L["ids_x"], 0, L["E"].rz(i) - 0.1), 0.26, YELLOW if i == self.hi else GREY)
-        text(words, "token   ID", Point3(L["words_x"] + 0.1, 0, L["E"].z_top + 0.4), 0.28, GREY)
+        text(words, t("tf.embed.ids"), Point3(L["words_x"] + 0.1, 0, L["E"].z_top + 0.4), 0.28, GREY)
         words.hide()
         self.keep(words)
         table = self.keep(self.mat(E, tb, scale=self.rs, hero=False, gapx=0.0))
@@ -431,12 +436,8 @@ class TransformerSteps:
         seq = Sequence(self.mapkey("embed"), self.overview(), show_fade(g_map, 1.2), Wait(2.4),
                        self.go(FX - 1.0, L["X"].x1 + 1.0, L["P"].z_bot - 1.2, tb.z_top + 0.6),
                        show_fade(words, 0.5), show_fade(table, 0.5), show_fade(marks, 0.4), flies,
-                       show_fade(tag, 0.3), self.track(T["emb"][self.hi], "token embedding"))
-        return ("THE MAP: everything the Transformer does, from left to right. Every token is one ROW of numbers and "
-                "keeps its row the whole way; the last row (yellow) is <ai>, whose row will predict the next word.  "
-                "STEP 1, EMBEDDING: each token ID picks its row of {} numbers from a learned table ({} x {}). "
-                "Stacked up, the rows form matrix E ({} x {}). Red = positive, blue = negative."
-                .format(self.d, self.V, self.d, n, self.d), seq)
+                       show_fade(tag, 0.3), self.track(T["emb"][self.hi], "tf.track.embed"))
+        return t("tf.embed.caption", d=self.d, V=self.V, n=n), seq
 
     # ================================================================== 2 positional encoding
     def s_position(self):
@@ -448,10 +449,8 @@ class TransformerSteps:
                        self.go(L["E"].x0 - 1.0, L["X"].x1 + 1.0, L["P"].z_bot - 1.2, L["E"].z_top + 1.0),
                        show_fade(P, 0.6), Wait(0.6), self.mapkey("pos", "embed"),
                        Parallel(*[Sequence(Wait(0.07 * i), show_fade(nd, 0.3)) for i, nd in enumerate(X)]),
-                       show_fade(tag, 0.3), self.track(T["x0"][self.hi], "added position"))
-        return ("STEP 2, POSITION: so far the model would not know the ORDER of the rows. Each position gets a fixed "
-                "pattern of numbers (P, made of sine waves) and it is simply ADDED, number by number: X = E + P. "
-                "X ({} x {}) goes into the attention block.".format(self.n, self.d), seq)
+                       show_fade(tag, 0.3), self.track(T["x0"][self.hi], "tf.track.pos"))
+        return t("tf.pos.caption", n=self.n, d=self.d), seq
 
     # ================================================================== 3 Q, K, V  (one multiplication worked out)
     def s_qkv(self):
@@ -483,9 +482,9 @@ class TransformerSteps:
         terms = " + ".join("({:.1f})·({:.1f})".format(xr[k], wq[k]) for k in range(3))
         tx = wb.x0 - 1.4
         fill(demo, tx - 0.3, self.zq + 1.0, tx + 17.5, self.zq + 2.9, (0.02, 0.02, 0.03, 1), 0.92, y=-0.05)
-        text(demo, "<ai>'s row of X  ·  first column of W_Q  =  first number of <ai>'s row of Q",
+        text(demo, t("tf.qkv.demo1"),
              Point3(tx, -0.06, self.zq + 2.2), 0.42, WHITE, Fonts.symbol, align=TextNode.ALeft)
-        text(demo, "{} + ...   ({} products added up)  =  {:.2f}".format(terms, self.d, q0),
+        text(demo, t("tf.qkv.demo2", terms=terms, d=self.d, q0=q0),
              Point3(tx, -0.06, self.zq + 1.4), 0.4, YELLOW, Fonts.symbol, align=TextNode.ALeft)
         rect(demo, bq.x0 - 0.06, bq.rz(self.hi) - RH / 2, bq.x0 + CD + 0.06, bq.rz(self.hi) + RH / 2, WHITE, 2.6,
              y=-0.03)
@@ -511,10 +510,7 @@ class TransformerSteps:
                        show_fade(eqs[1], 0.2),
                        show_fade(mats[2], 0.3), self.sweep(rowsets[2], 0.7), show_fade(tags[2], 0.2),
                        show_fade(eqs[2], 0.2))
-        return ("STEP 3, Q K V: three ordinary matrix multiplications with learned matrices: X · W_Q = Q, X · W_K = "
-                "K, X · W_V = V (each {} x {}). One number is worked out on top: <ai>'s row of X times the first "
-                "column of W_Q. The idea: Q = what each token is LOOKING FOR, K = what it OFFERS, V = what it will "
-                "PASS ON.".format(n, self.dh), seq)
+        return t("tf.qkv.caption", n=n, dh=self.dh), seq
 
     # ================================================================== 4 scores = Q K^T
     def s_scores(self):
@@ -533,8 +529,8 @@ class TransformerSteps:
                                            LerpHprInterval(nd, 1.0, (0, 0, 90))),
                                   Func(nd.hide)))
         heads = self.root().attachNewNode("kt_heads")
-        for j, t in enumerate(self.ttoks):
-            text(heads, disp(t)[:5], Point3(KT.cx(j), 0, KT.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
+        for j, tk in enumerate(self.ttoks):
+            text(heads, disp(tk)[:5], Point3(KT.cx(j), 0, KT.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
         text(heads, "Kᵀ", Point3(KT.x0 - 1.1, 0, KT.zc - 0.15), TS, WHITE, Fonts.symbol)
         heads.hide()
         self.keep(heads)
@@ -557,20 +553,15 @@ class TransformerSteps:
              y=-0.04)
         demo.hide()
         nx = S.x1 + 0.6
-        info = self.note("Q · Kᵀ = scores\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.dh, self.dh, n, n, n),
-                         nx, S.z_top - 0.35, 0.34, WHITE)
-        info2 = self.note("cell (i, j) = how well token i's\nquestion (Q) matches token j (K).\n"
-                          "Then all ÷ {}{} = {:.0f}".format(SQ, self.dh, np.sqrt(self.dh)), nx, S.z_top - 1.6, 0.32)
-        mask_t = self.note("MASK: no looking at LATER\ntokens -> grey (−∞)", nx, S.z_top - 3.3, 0.32, ORANGE)
+        info = self.note(t("tf.scores.info", n=n, dh=self.dh), nx, S.z_top - 0.35, 0.34, WHITE)
+        info2 = self.note(t("tf.scores.info2", dh=self.dh, root=np.sqrt(self.dh)), nx, S.z_top - 1.6, 0.32)
+        mask_t = self.note(t("tf.scores.mask"), nx, S.z_top - 3.3, 0.32, ORANGE)
         seq = Sequence(self.mapkey("attn"), self.go(L["K"].x0 - 0.8, S.x1 + 6.6, L["K"].zc, KT.z_top + 1.0),
                        flies, show_fade(kt, 0.3), show_fade(heads, 0.3), show_fade(info, 0.3), show_fade(demo, 0.3),
                        Wait(1.2), show_fade(grid_raw, 0.8), show_fade(nums, 0.3), show_fade(info2, 0.3), Wait(1.0),
                        fade_out(demo, 0.3), Func(demo.hide),
                        show_fade(grid_m, 0.5), Func(grid_raw.hide), show_fade(mask_t, 0.4))
-        return ("STEP 4, SCORES: Q · Kᵀ is again a matrix multiplication. The K rows turn into columns (Kᵀ, on "
-                "top), so cell (i, j) = row i of Q · column j of Kᵀ = how well token i's question matches token j. "
-                "The yellow row is <ai> compared with every token. Then the MASK: no token may look at tokens that "
-                "come AFTER it (grey). <ai> is last, so it sees everything.", seq)
+        return t("tf.scores.caption"), seq
 
     # ================================================================== 5 softmax -> A
     def s_softmax(self):
@@ -584,17 +575,14 @@ class TransformerSteps:
             v = H["att"][self.hi, j]
             text(nums, "{:.2f}".format(v), Point3(A.cx(j), 0, A.rz(self.hi) - 0.08), 0.18,
                  (0, 0, 0, 1) if v > 0.45 else WHITE)
-        for j, t in enumerate(self.ttoks):
-            text(nums, disp(t)[:5], Point3(A.cx(j), 0, A.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
+        for j, tk in enumerate(self.ttoks):
+            text(nums, disp(tk)[:5], Point3(A.cx(j), 0, A.z_top + 0.25), 0.24, YELLOW if j == self.hi else GREY)
         nums.hide()
         self.keep(nums)
-        info = self.note("softmax, row by row:\nall weights ≥ 0,\nevery row adds up to 1\n\nbright = big weight",
-                         A.x1 + 0.6, A.z_top - 0.4)
+        info = self.note(t("tf.softmax.info"), A.x1 + 0.6, A.z_top - 0.4)
         seq = Sequence(self.mapkey("attn"), self.go(L["S"].x0 - 0.6, A.x1 + 6.0, A.z_bot - 1.6, A.z_top + 1.4),
                        show_fade(grid, 0.8), show_fade(nums, 0.4), show_fade(info, 0.3))
-        return ("STEP 5, WEIGHTS: softmax turns every row of scores into WEIGHTS (e^score, then divide by the row's "
-                "sum): all positive, every row adds up to 1, bright = big. The yellow row says how much <ai> pays "
-                "attention to each token - most to {}.".format(self.top_attn(H["att"], 2)), seq)
+        return t("tf.softmax.caption", top=self.top_attn(H["att"], 2)), seq
 
     # ================================================================== 6 A . V  (weighted sum)
     def s_weighted(self):
@@ -622,8 +610,7 @@ class TransformerSteps:
                                     Func(copies[j].setColorScale, 1, 1, 1, 1)) for j in range(n)])
         rows = self.rows_of(H["out"], O1, scale=sc_of(H["out"]))
         tag = self.ai_tag(O1)
-        info = self.note("A · V = head output\n({} × {}) · ({} × {}) = ({} × {})".format(n, n, n, self.dh, n, self.dh),
-                         O1.x1 + 0.5, O1.z_top - 0.4, 0.34, WHITE)
+        info = self.note(t("tf.weighted.info", n=n, dh=self.dh), O1.x1 + 0.5, O1.z_top - 0.4, 0.34, WHITE)
         hl = self.root().attachNewNode("ahl")
         rect(hl, A.x0 - 0.12, A.rz(self.hi) - RH / 2 - 0.05, A.x1 + 0.12, A.rz(self.hi) + RH / 2 + 0.05, WHITE, 2.8,
              y=-0.03)
@@ -637,11 +624,7 @@ class TransformerSteps:
                        fade_out(wcol, 0.3), Func(wcol.hide),
                        self.sweep([nd for i, nd in enumerate(rows) if i != self.hi], 0.8), show_fade(tag, 0.2),
                        show_fade(info, 0.3))
-        return ("STEP 6, MIX: A · V is a matrix multiplication again, and what it does is MIX the V rows: <ai>'s new "
-                "row = (its weight for token 1) × V row 1 + (weight 2) × V row 2 + ... Strong weights stay bright, "
-                "weak ones fade, then all are added up. So <ai> now carries information from '{}' and '{}'. Every "
-                "row does the same with its own weights.".format(disp(self.ttoks[int(top2[0])]),
-                                                                 disp(self.ttoks[int(top2[1])])), seq)
+        return t("tf.weighted.caption", a=disp(self.ttoks[int(top2[0])]), b=disp(self.ttoks[int(top2[1])])), seq
 
     # ================================================================== 7 head 2
     def s_head2(self):
@@ -661,9 +644,7 @@ class TransformerSteps:
                        self.go(L["fan"] - 1.0, L["O2"].x1 + 1.5, L["O2"].z_bot - 1.6, L["V"].z_bot + 0.5),
                        self.sweep(parts, 0.6), Wait(0.3), show_fade(s2, 0.5), Wait(0.3), show_fade(a2, 0.5), Wait(0.3),
                        show_fade(o2, 0.5), show_fade(tag, 0.2))
-        return ("STEP 7, HEAD 2: attention is done twice side by side, with a second set of W_Q, W_K, W_V - the same "
-                "steps 3 to 6. Each head can look for a different kind of relation. <ai> - head 1: {};  head 2: {}."
-                .format(self.top_attn(H1["att"], 2), self.top_attn(H["att"], 2)), seq)
+        return t("tf.head2.caption", h1=self.top_attn(H1["att"], 2), h2=self.top_attn(H["att"], 2)), seq
 
     # ================================================================== 8 concat x W_O = delta X
     def s_concat(self):
@@ -685,17 +666,14 @@ class TransformerSteps:
         wo = self.keep(self.mat(LT["Wo"], L["WO"], hero=False, gapx=0.06))
         rows = self.rows_of(LT["delta"], D, scale=self.rs)
         tags = [self.ai_tag(b) for b in (C, D)]
-        info = self.note("head 1 | head 2", C.xc, C.z_top + 0.4, 0.34, GREY, TextNode.ACenter)
-        info2 = self.note("concat · W_O = ΔX    ({} × {}) · ({} × {}) = ({} × {})".format(n, self.d, self.d, self.d, n,
-                                                                                         self.d),
+        info = self.note(t("tf.concat.heads"), C.xc, C.z_top + 0.4, 0.34, GREY, TextNode.ACenter)
+        info2 = self.note(t("tf.concat.info", n=n, d=self.d),
                           L["WO"].xc, C.z_bot - 2.0, 0.36, WHITE, TextNode.ACenter)
         seq = Sequence(self.mapkey("attn"),
                        self.go(L["O1"].x0 - 1.0, D.x1 + 1.0, L["O2"].z_bot - 1.4, C.z_top + 1.4),
                        flies, self.go(C.x0 - 1.5, D.x1 + 1.5, C.z_bot - 2.8, C.z_top + 1.4), show_fade(cmat, 0.3), show_fade(tags[0], 0.2), show_fade(info, 0.3), Wait(0.3),
                        show_fade(wo, 0.4), self.sweep(rows, 0.8), show_fade(tags[1], 0.2), show_fade(info2, 0.3))
-        return ("STEP 8: the two head outputs are put side by side (16 + 16 = {} numbers per row) and multiplied by "
-                "one more learned matrix W_O. The result ΔX is the CHANGE that attention wants to make to every "
-                "token's row.".format(self.d), seq)
+        return t("tf.concat.caption", d=self.d), seq
 
     # ================================================================== residual travel helper
     def _residual(self, src_box, M, rz, plus):
@@ -721,18 +699,15 @@ class TransformerSteps:
         up, over, down = self._residual(L["X"], T["x0"], r1, L["plus1"])
         rows = self.rows_of(LT["x1"], X1, scale=self.rs)
         tag = self.ai_tag(X1)
-        info = self.note("X + ΔX, then NORM each row:\nminus its mean, ÷ its spread,\n× gain + bias (learned)",
+        info = self.note(t("tf.add1.info"),
                          L["norm1"][0], L["D"].z_bot - 2.0, 0.34, GREY, TextNode.ACenter)
         seq = Sequence(self.mapkey("add1"),
                        self.go(L["X"].x0 - 1.0, X1.x1 + 1.0, L["D"].z_bot - 3.0, r1 + 2.4),
                        up, over, self.go(L["D"].x0 - 1.5, X1.x1 + 1.5, L["D"].z_bot - 3.4, r1 + 2.4),
                        down, self.go(L["D"].x0 - 1.5, X1.x1 + 1.5, L["D"].z_bot - 3.6, L["D"].z_top + 1.6),
                        show_fade(info, 0.3), self.sweep(rows, 0.8), show_fade(tag, 0.2),
-                       self.track(LT["x1"][self.hi], "layer 1: add & norm"))
-        return ("STEP 9, ADD & NORM: X itself jumps over the whole attention block (red line, the 'residual') and "
-                "is ADDED to ΔX: X + ΔX. So attention only adds a correction and nothing is lost. Then every row is "
-                "normalized (mean 0, spread 1) to keep the numbers in a stable range. Result: X1 ({} x {})."
-                .format(n, self.d), seq)
+                       self.track(LT["x1"][self.hi], "tf.track.add1"))
+        return t("tf.add1.caption", n=n, d=self.d), seq
 
     # ================================================================== 10 feed forward
     def s_ffn(self):
@@ -748,12 +723,11 @@ class TransformerSteps:
         rows = self.rows_of(LT["ff"], L["F"], scale=self.rs)
         tags = [self.ai_tag(b) for b in (L["H"], L["F"])]
         off = int((pre[self.hi] <= 0).sum())
-        relu = self.note("ReLU: every negative number -> 0\n(<ai>: {} of {} switched off)".format(off, self.ff),
+        relu = self.note(t("tf.ffn.relu", off=off, ff=self.ff),
                          L["H"].xc, L["H"].z_bot - 2.0, 0.36, ORANGE, TextNode.ACenter)
         info = self.note("X1 · W1\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.d, self.d, self.ff, n, self.ff),
                          L["W1"].xc, L["W1"].z_bot - 1.9, 0.34, WHITE, TextNode.ACenter)
-        info2 = self.note("hidden · W2\n({} × {}) · ({} × {}) = ({} × {})".format(n, self.ff, self.ff, self.d, n,
-                                                                                 self.d),
+        info2 = self.note(t("tf.ffn.info2", n=n, ff=self.ff, d=self.d),
                           L["F"].xc, L["F"].z_bot - 2.0, 0.34, WHITE, TextNode.ACenter)
         seq = Sequence(self.mapkey("ffn"),
                        self.go(L["X1"].x0 - 1.0, L["H"].x1 + 1.0, L["H"].z_bot - 3.4, L["X1"].z_top + 2.0),
@@ -761,10 +735,7 @@ class TransformerSteps:
                        Wait(0.8), show_fade(relu, 0.3), Wait(0.3), show_fade(Hrelu, 0.6), Func(Hpre.hide), Wait(0.8),
                        self.go(L["H"].x0 - 1.0, L["F"].x1 + 1.5, L["W2f"].z_bot - 1.0, L["W2f"].z_top + 0.8),
                        show_fade(W2, 0.4), self.sweep(rows, 0.8), show_fade(tags[1], 0.2), show_fade(info2, 0.3))
-        return ("STEP 10, FEED FORWARD: two more matrix multiplications: X1 · W1 gives {} numbers per token, ReLU sets "
-                "every negative one to 0 (dark), then · W2 brings it back to {}. Each row is processed ON ITS OWN - "
-                "no mixing between rows. Attention = tokens talk to each other; feed forward = each token thinks "
-                "for itself.".format(self.ff, self.d), seq)
+        return t("tf.ffn.caption", ff=self.ff, d=self.d), seq
 
     # ================================================================== 11 add & norm -> layer 1 output
     def s_add2(self):
@@ -778,10 +749,8 @@ class TransformerSteps:
         seq = Sequence(self.mapkey("add2"), self.go(L["X1"].x0 - 1.0, X2.x1 + 1.0, X2.z_bot - 2.0, r2 + 2.4),
                        up, over, down, self.go(L["F"].x0 - 1.5, X2.x1 + 1.5, X2.z_bot - 2.0, X2.z_top + 1.6),
                        self.sweep(rows, 0.8), show_fade(tag, 0.2),
-                       self.track(LT["x_out"][self.hi], "end of layer 1"))
-        return ("STEP 11, ADD & NORM again: X1 jumps over the feed forward block and is added to F, then every row "
-                "is normalized. X2 is the output of LAYER 1 - the same shape as X ({} x {}), but now every row knows "
-                "something about the other tokens.".format(n, self.d), seq)
+                       self.track(LT["x_out"][self.hi], "tf.track.l1end"))
+        return t("tf.add2.caption", n=n, d=self.d), seq
 
     # ================================================================== 12 layer 2
     def s_layer2(self):
@@ -793,14 +762,13 @@ class TransformerSteps:
         box = self.root().attachNewNode("l2flash")
         fill(box, x0, L["X2"].zc - 3.0, x1, L["X2"].zc + 3.0, (0.45, 0.75, 0.45, 1), 0.18)
         box.hide()
-        seq = Sequence(Func(self.app.ui.arch.set_layer, "layer 2 of 2"), self.mapkey("attn"),
+        seq = Sequence(Func(self.app.ui.arch.set_layer, "arch.layer2"), self.mapkey("attn"),
                        self.go(L["X2"].x0 - 1.0, L["X3"].x1 + 1.0, L["X2"].z_bot - 2.0, L["X2"].z_top + 3.0),
                        show_fade(box, 0.4), self.mapkey("add1"), Wait(0.4), self.mapkey("ffn"), Wait(0.4),
                        self.mapkey("add2"), Wait(0.3), fade_out(box, 0.4), Func(box.hide), self.sweep(rows, 0.8),
-                       show_fade(tag, 0.2), self.track(LT["x_out"][self.hi], "end of layer 2"),
-                       Func(self.app.ui.arch.set_layer, "x 2 layers"))
-        return ("STEP 12, LAYER 2: steps 3-11 once more, with its own learned matrices. In layer 2, <ai> looks most "
-                "at: {}. Real models stack 30-100 such layers.".format(self.top_attn(LT["heads"][0]["att"], 2)), seq)
+                       show_fade(tag, 0.2), self.track(LT["x_out"][self.hi], "tf.track.l2end"),
+                       Func(self.app.ui.arch.set_layer, "arch.layers"))
+        return t("tf.layer2.caption", top=self.top_attn(LT["heads"][0]["att"], 2)), seq
 
     # ================================================================== 13 output
     def s_output(self):
@@ -825,7 +793,7 @@ class TransformerSteps:
         top = np.argsort(-probs)[:5]
         pg = self.root().attachNewNode("probs")
         px = L["probs_x"]
-        text(pg, "softmax -> probabilities", Point3(px - 2.2, 0, row.z_top + 1.4), 0.42, GREY, align=TextNode.ALeft)
+        text(pg, t("tf.out.probs"), Point3(px - 2.2, 0, row.z_top + 1.4), 0.42, GREY, align=TextNode.ALeft)
         for k, j in enumerate(top):
             z = row.zc + 0.5 - k * 0.9
             text(pg, disp(m.vocab[j]), Point3(px - 0.2, 0, z - 0.15), 0.44, WHITE, align=TextNode.ARight)
@@ -835,22 +803,17 @@ class TransformerSteps:
                  0.34, GREY, align=TextNode.ALeft)
         pg.hide()
         self.keep(pg)
-        info = self.note("only <ai>'s row:  (1 × {}) · ({} × {}) = (1 × {})\none score for every token the model knows"
-                         .format(self.d, self.d, self.V, self.V), WO.xc, WO.z_bot - 1.9, 0.36, WHITE, TextNode.ACenter)
+        info = self.note(t("tf.out.info", d=self.d, V=self.V), WO.xc, WO.z_bot - 1.9, 0.36, WHITE, TextNode.ACenter)
         hz = X3.z_top - self.hi * RH
-        seq = Sequence(Func(self.app.ui.arch.set_layer, "x 2 layers"), self.mapkey("linear"),
+        seq = Sequence(Func(self.app.ui.arch.set_layer, "arch.layers"), self.mapkey("linear"),
                        self.go(X3.x0 - 1.0, lg.x1 + 1.0, WO.z_bot - 3.0, WO.z_top + 1.6),
                        self.fly(nd, (X3.x0, 0, hz), (row.x0, 0, row.z_top), 1.2), show_fade(r, 0.2),
                        show_fade(wout, 0.5), Wait(0.4), show_fade(lmat, 0.6), show_fade(info, 0.3), Wait(1.2),
                        self.go(lg.x0 - 1.0, px + 8.0, WO.z_bot - 2.0, WO.z_top + 1.6),
                        show_fade(mark, 0.3), self.mapkey("softmax", "output"), Wait(0.3), show_fade(pg, 0.5),
-                       self.track(xl, "used for the prediction"))
-        extra = (" (Almost 100%: this tiny model learned these few conversations by heart - big models are much less "
-                 "certain.)" if probs[top[0]] > 0.99 else "")
-        return ("STEP 13, OUTPUT: only <ai>'s row - the yellow row we followed all the way - is used now. One last "
-                "matrix multiplication with W_out gives one score for each of the {} tokens the model knows; softmax "
-                "turns the scores into probabilities. Winner: '{}' ({:.1%}).".format(
-                    self.V, disp(m.vocab[int(top[0])]), probs[top[0]]) + extra, seq)
+                       self.track(xl, "tf.track.pred"))
+        extra = t("tf.out.extra") if probs[top[0]] > 0.99 else ""
+        return t("tf.out.caption", V=self.V, w=disp(m.vocab[int(top[0])]), p=probs[top[0]]) + extra, seq
 
     # ================================================================== deep dive OFF
     def s_quick(self):
@@ -870,7 +833,5 @@ class TransformerSteps:
                 nd.setColorScale(1, 1, 1, 1)
         seq = Sequence(self.mapkey("attn"), Func(show_all),
                        *[Sequence(self.go(a, b, self.bot_z, self.top_z), Wait(1.8)) for a, b in cams])
-        seq.append(self.track(self.T["layers"][1]["x_out"][self.hi], "end of layer 2"))
-        return ("Inside the Transformer (deep dive OFF - press D to see every step): attention lets the token rows "
-                "exchange information, feed forward processes each row, and that twice (2 layers). Follow the "
-                "yellow <ai> row.", seq)
+        seq.append(self.track(self.T["layers"][1]["x_out"][self.hi], "tf.track.l2end"))
+        return t("tf.quick.caption"), seq

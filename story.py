@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Claude Opus 写的
+# 中英文切换：Claude 改了这个文件（界面文字改用 i18n.t，Engine 可传 seed）
 """
 Story = one question turned into a list of animated steps on one big black board.
 
@@ -19,8 +20,9 @@ from direct.interval.IntervalGlobal import (Func, LerpColorScaleInterval, LerpFu
 from panda3d.core import Point3, TextNode, Vec3
 
 from engine import Engine
+from i18n import t
 from kit import (BLUE, DIM, GREEN, GREY, ORANGE, WHITE, YELLOW, Fonts, array_to_texture, arrow2d,
-                 curve_arrow2d, fade_in, fade_out, fill, image_card, rect, text, text_width)
+                 curve_arrow2d, fade_in, fade_out, fill, fx, image_card, rect, text, text_width)
 from tf_steps import TransformerSteps, disp
 
 STAGES = ["Context", "Tokens", "Embedding", "Attention", "Add & Norm", "Feed Fwd", "Output", "Tool", "Answer"]
@@ -61,12 +63,12 @@ def word(t):
 
 
 class Story(TransformerSteps):
-    def __init__(self, app, sc, deep=True):
+    def __init__(self, app, sc, deep=True, seed=None):
         self.app = app
         self.sc = sc
         self.deep = deep
         self.board = app.board
-        self.engine = Engine(sc)
+        self.engine = Engine(sc, seed)
         self.results = [r["result"] for r in self.engine.rounds if r["kind"] == "tool"]
         self.tf_setup()
         self.toks = self.ttoks
@@ -117,21 +119,19 @@ class Story(TransformerSteps):
         a = self.board.attachNewNode("context")
         pr = self.sc["prompt"]
         sc_big = min(0.95, 21.0 / max(1.0, text_width(pr)))
-        lines_ = [("system:", SYSTEM_TEXT), ("tools:", "calculator    run_terminal    plot_chart    generate_image")]
+        lines_ = [(t("story.sys"), SYSTEM_TEXT), (t("story.tools"), "calculator    run_terminal    plot_chart    generate_image")]
         hidden = a.attachNewNode("hidden")
         for i, (k, v) in enumerate(lines_):
             text(hidden, k, Point3(-10.5, 0, 7.4 - i * 0.75), 0.4, GREY, align=TextNode.ARight)
             text(hidden, v, Point3(-10.1, 0, 7.4 - i * 0.75), 0.4, GREY, align=TextNode.ALeft)
-        text(hidden, "user:", Point3(-10.5, 0, 5.9), 0.4, GREY, align=TextNode.ARight)
+        text(hidden, t("story.user"), Point3(-10.5, 0, 5.9), 0.4, GREY, align=TextNode.ARight)
         self.hidden = hidden
         self.sentence = text(a, pr, Point3(0, 0, 4.2), sc_big, WHITE)
         self.sentence.hide()
         seq = Sequence(Func(self.app.ui.arch.highlight, "input"), self.view(SEC_A + Vec3(0, 0, 3.0), 0, 0, 24),
                        self.chat("You", pr), fade_in(hidden, 0.8), Wait(0.3), Func(self.sentence.show),
                        fade_in(self.sentence, 1.0))
-        return ("Your message is never sent alone. A hidden SYSTEM PROMPT (rules + the list of tools) comes first. "
-                "Together they form the CONTEXT - the only thing the model sees. Everything from here on is computed "
-                "by a REAL tiny Transformer trained for this demo.", seq)
+        return t("story.context.caption"), seq
 
     # ================================================================ A: tokens
     def s_tokens(self):
@@ -153,27 +153,25 @@ class Story(TransformerSteps):
         self.a_tokens, self.a_tok_x = [], xs
         seq = Parallel(Sequence(fade_out(self.sentence, 0.5), Func(self.sentence.hide)),
                        LerpColorScaleInterval(self.hidden, 0.6, (1, 1, 1, 0.45)))
-        for i, (t, w) in enumerate(zip(toks, widths)):
+        for i, (tk, w) in enumerate(zip(toks, widths)):
             g = self.board.attachNewNode("tok")
             c, xx = self.tcolor[i], xs[i]
             fill(g, xx - w / 2, z - 0.35 * f, xx + w / 2, z + 0.62 * f, c)
             rect(g, xx - w / 2, z - 0.35 * f, xx + w / 2, z + 0.62 * f, c, 2.2)
-            text(g, disp(t), Point3(xx, 0, z), sc * f, WHITE)
+            text(g, disp(tk), Point3(xx, 0, z), sc * f, WHITE)
             text(g, str(self.T["ids"][i]), Point3(xx, 0, z - 0.85 * f), 0.32 * f, GREY)
             if i == self.hi:
                 rect(g, xx - w / 2 - 0.12, z - 1.2 * f, xx + w / 2 + 0.12, z + 0.78 * f, YELLOW, 2.6, y=-0.03)
             g.hide()
             self.a_tokens.append(g)
             seq.append(Sequence(Wait(0.3 + 0.08 * i), Func(g.show), fade_in(g, 0.4)))
-        note = text(self.board, "<sys> = the whole system prompt, squeezed into ONE token in this tiny model.   "
-                    "<user> / <ai> mark who is speaking.", Point3(0, 0, -0.6), 0.34, GREY)
+        note = text(self.board, t("story.tokens.note"), Point3(0, 0, -0.6), 0.34, GREY)
         note.hide()
         seq.append(Sequence(Wait(1.6), Func(note.show), fade_in(note, 0.5)))
         parts = [disp(t) for t in toks if not t.startswith(" ") and t.isalpha() and t not in toks[2:3]]
-        extra = (" Look: '{}' is only part of a word.".format(parts[0]) if parts else "")
-        extra += " The yellow one, <ai>, is the token we will follow all the way through the model."
-        return ("TOKENIZER: the text is cut into TOKENS (words or pieces of words) and each token gets its ID number "
-                "in the model's vocabulary ({} tokens).".format(self.V) + extra,
+        extra = (t("story.tokens.part", part=parts[0]) if parts else "")
+        extra += t("story.tokens.follow")
+        return (t("story.tokens.caption", V=self.V) + extra,
                 Sequence(Func(self.app.ui.arch.highlight, "input"), self.view(SEC_A + Vec3(0, 0, 2.0), 0, 0, 24), seq))
 
     # ================================================================ rounds (what the model writes)
@@ -205,19 +203,19 @@ class Story(TransformerSteps):
         a = self.board.attachNewNode("predict")
         self.pa = a
         rect(a, P.x - CTX_W / 2 - 0.3, P.z + 4.6, P.x + CTX_W / 2 + 0.3, P.z + 10.6, DIM, 1.4)
-        text(a, "context  (everything the model reads)", Point3(P.x - CTX_W / 2 - 0.3, 0, P.z + 10.9), 0.4,
+        text(a, t("story.pa.context"), Point3(P.x - CTX_W / 2 - 0.3, 0, P.z + 10.9), 0.4,
              GREY, align=TextNode.ALeft)
         arrow2d(a, (P.x, 0, P.z + 4.55), (P.x, 0, P.z + 3.95), WHITE, 1.6, 0.18)
         fill(a, P.x - 6, P.z + 1.6, P.x + 6, P.z + 3.8, (0.75, 0.75, 0.78, 1), 0.12)
         self.tf_box = rect(a, P.x - 6, P.z + 1.6, P.x + 6, P.z + 3.8, WHITE, 1.6)
         text(a, "Transformer", Point3(P.x, 0, P.z + 2.75), 0.62, WHITE)
-        text(a, "the whole model:  2 layers x (attention + feed-forward)", Point3(P.x, 0, P.z + 1.95), 0.36, GREY)
+        text(a, t("story.pa.model"), Point3(P.x, 0, P.z + 1.95), 0.36, GREY)
         arrow2d(a, (P.x, 0, P.z + 1.55), (P.x, 0, P.z + 0.65), WHITE, 1.6, 0.18)
-        text(a, "next-token probabilities", Point3(P.x - 3.0, 0, P.z + 0.15), 0.36, GREY, align=TextNode.ALeft)
+        text(a, t("story.pa.probs"), Point3(P.x - 3.0, 0, P.z + 0.15), 0.36, GREY, align=TextNode.ALeft)
         rx = P.x + CTX_W / 2 + 1.3
         curve_arrow2d(a, [(P.x + 8.5, 0, P.z - 1.6), (rx, 0, P.z - 1.6), (rx, 0, P.z + 7.6),
                           (rx - 0.9, 0, P.z + 7.6)], YELLOW, 2.0, 0.25)
-        lab = text(a, "append the new token, run again", Point3(rx + 0.55, 0, P.z + 3.0), 0.36, YELLOW)
+        lab = text(a, t("story.pa.append"), Point3(rx + 0.55, 0, P.z + 3.0), 0.36, YELLOW)
         lab.setR(-90)
         self.bars = []
         for i in range(5):
@@ -321,8 +319,8 @@ class Story(TransformerSteps):
         if not hasattr(self, "pa"):
             self._build_predict_area()
             user = []
-            for k, t in enumerate(self.engine.first_context):
-                c = self.add_chip(word(t), self.tcolor[k], ("user",))
+            for k, tk in enumerate(self.engine.first_context):
+                c = self.add_chip(word(tk), self.tcolor[k], ("user",))
                 c.np.hide()
                 user.append(c)
             seq.append(Func(self.pa.show))
@@ -330,7 +328,7 @@ class Story(TransformerSteps):
             seq.append(Parallel(*[Sequence(Wait(0.05 * k), Func(c.np.show), fade_in(c.np, 0.3))
                                   for k, c in enumerate(user)]))
         if which == "first" and i > 1:
-            seq.append(self.collapse(("res", i - 2), "tool result", GREEN))
+            seq.append(self.collapse(("res", i - 2), t("story.chip.tool_result"), GREEN))
         j = self._range(i, which)[0]
         cands = self._cands(i, j)
         tok = r["toks"][j]
@@ -342,23 +340,16 @@ class Story(TransformerSteps):
                        Wait(0.5), self.emit(i, j, 1.0), Wait(0.4))
         p = dict(cands)[tok]
         if r["kind"] == "tool" and which == "first":
-            cap = ("The winning token is APPENDED to the context, and to get the next token the whole model runs "
-                   "again (every step you just saw). The first token here is the special <tool_call> ({:.1f}%) - "
-                   "'deciding to use a tool' is just predicting this token!".format(p * 100))
+            cap = t("story.predict.tool_first", p=p * 100)
             if i > 0:
-                cap = ("The tool result is now in the context, and the model runs again on EVERYTHING. It decides "
-                       "it needs another tool: <tool_call> again ({:.1f}%).".format(p * 100))
+                cap = t("story.predict.tool_again", p=p * 100)
         elif which == "name":
-            cap = ("Which tool? The model writes the tool's NAME as a token: '{}' ({:.1f}%). Writing the name does "
-                   "not run anything yet - it is still just text.".format(r["name"], p * 100))
+            cap = t("story.predict.name", name=r["name"], p=p * 100)
         elif i > 0:
-            cap = ("The tool result is now part of the context, so this time the most likely first token is normal "
-                   "text: '{}' ({:.1f}%). The model starts its reply.".format(word(tok), p * 100))
+            cap = t("story.predict.reply", tok=word(tok), p=p * 100)
         else:
             alt = [c for c, _ in cands if c != tok][0]
-            cap = ("A greeting needs no tool. Here two tokens are almost equally likely: '{}' and '{}' (about "
-                   "{:.0f}% each). The model SAMPLES - it rolled '{}' this time. Press R: next time it may start "
-                   "with '{}'. That is why answers vary.".format(word(tok), word(alt), p * 100, word(tok), word(alt)))
+            cap = t("story.predict.greeting", tok=word(tok), alt=word(alt), p=p * 100)
         return cap, seq
 
     def s_fast(self, i, which):
@@ -371,14 +362,11 @@ class Story(TransformerSteps):
         seq = Sequence(self.view(PRED_VIEW, 0, 0, PRED_D), par, Wait(0.8))
         n = len(js)
         if r["kind"] == "tool" and which == "to_name":
-            cap = ("Again and again: each new token is appended to the context and the whole model runs once more to "
-                   "predict the next one (orange chips). This loop is called AUTOREGRESSIVE generation.")
+            cap = t("story.fast.to_name")
         elif r["kind"] == "tool":
-            cap = ("The model finishes the tool call: the arguments ({} more tokens), then </tool_call>. It is still "
-                   "only text - but text in a strict format that a program can read.".format(n))
+            cap = t("story.fast.tool_rest", n=n)
         else:
-            cap = ("The reply is generated token by token ({} more), until the model predicts a special "
-                   "'end of text' token.".format(n))
+            cap = t("story.fast.reply", n=n)
         return cap, seq
 
     # ================================================================ T: tool area
@@ -387,10 +375,11 @@ class Story(TransformerSteps):
         a = self.board.attachNewNode("tools")
         self.ta = a
         rect(a, T.x - 21, T.z - 4.2, T.x - 8.6, T.z + 7.2, WHITE, 1.6)
-        text(a, "program  (the harness)", Point3(T.x - 14.8, 0, T.z + 6.3), 0.48, WHITE)
-        text(a, "ordinary code around the model", Point3(T.x - 14.8, 0, T.z + 5.7), 0.28, GREY)
+        text(a, t("story.ta.title"), Point3(T.x - 14.8, 0, T.z + 6.3), 0.48, WHITE)
+        text(a, t("story.ta.sub"), Point3(T.x - 14.8, 0, T.z + 5.7), 0.28, GREY)
         self.prog_text = text(a, "", Point3(T.x - 20.5, 0, T.z + 4.8), 0.3, (0.85, 1, 0.85, 1), Fonts.mono,
                               TextNode.ALeft, wrap=39)
+        self.prog_font = Fonts.mono
         self.panels = {}
         for name, (px, pz) in TOOL_PANELS.items():
             cx, cz = T.x + px, T.z + pz
@@ -414,14 +403,14 @@ class Story(TransformerSteps):
         call = "{}({})".format(r["name"], args)
         if len(call) > 150:
             call = call[:147] + "..."
-        lines_ = ["model output:", r["text"] if len(r["text"]) < 170 else r["text"][:167] + "...", "",
-                  "found <tool_call> -> stop the model", "read the tool name and arguments", "",
-                  "call:", call]
+        lines_ = [t("story.prog.output"), r["text"] if len(r["text"]) < 170 else r["text"][:167] + "...", "",
+                  t("story.prog.found"), t("story.prog.read"), "",
+                  t("story.prog.call"), call]
         shown = []
 
         def add(line):
             shown.append(line)
-            self.prog_text.node().setText("\n".join(shown))
+            self.prog_text.node().setText(fx("\n".join(shown), self.prog_font))
         arrow = arrow2d(self.ta, (T.x - 8.5, 0, T.z + 1.5), (pnl["cx"] - PANEL_W / 2 - 0.1, 0, pnl["cz"]),
                         YELLOW, 2.2, 0.28)
         arrow.hide()
@@ -437,9 +426,7 @@ class Story(TransformerSteps):
         seq.append(Func(pnl["hot"].show))
         seq.append(Func(arrow.show))
         seq.append(fade_in(arrow, 0.5))
-        return ("The model itself cannot run code, open files or draw pictures - it only produced text. The program "
-                "around it (the 'harness') watches the output. When it sees <tool_call>, it stops the model, reads "
-                "the tool name and arguments, and calls the matching Python function.", seq)
+        return t("story.prog.caption"), seq
 
     def s_run(self, i):
         r = self.round(i)
@@ -478,19 +465,7 @@ class Story(TransformerSteps):
                 seq.append(fade_in(card, 1.0))
         seq.append(self.chat("Tool", res["text"]))
         seq.append(Wait(0.8))
-        cap = {
-            "calculator": "Ordinary Python computes the exact result. LLMs see numbers as tokens (remember 235 + 0?) "
-                          "and can make arithmetic mistakes - a calculator tool is far more reliable.",
-            "run_terminal": "The program REALLY runs this command on your computer, right now. Only whitelisted, "
-                            "read-only commands are allowed - giving an AI a terminal is powerful, so real systems "
-                            "ask the user first.",
-            "plot_chart": "matplotlib (a normal Python library) draws the chart. The language model never drew a "
-                          "single pixel - it only chose the chart type, title and data.",
-            "generate_image": "A DIFFERENT AI (an image / diffusion model) starts from pure noise and removes noise "
-                              "step by step, guided by the prompt (simulated here). Note: the LLM rewrote your "
-                              "request into a more detailed prompt!",
-        }[r["name"]]
-        return cap, seq
+        return t("story.run." + r["name"]), seq
 
     def _diffusion(self, tex, img, body):
         import numpy as np
@@ -502,8 +477,8 @@ class Story(TransformerSteps):
         steps = 25
         state = {"k": -1}
 
-        def upd(t):
-            k = int(t * steps)
+        def upd(frac):
+            k = int(frac * steps)
             if k == state["k"]:
                 return
             state["k"] = k
@@ -511,7 +486,7 @@ class Story(TransformerSteps):
             fresh = rng.normal(0, 60 * (1 - a), size=(h, w, 1)).astype(np.float32)
             mix = np.clip(target * a + noise * (1 - a) + fresh, 0, 255).astype(np.uint8)
             tex.setRamImageAs(mix[::-1].tobytes(), "RGBA")
-            body.node().setText("denoising step {}/{}".format(k, steps))
+            body.node().setText(fx(t("story.run.denoise", k=k, steps=steps), Fonts.mono))
         return Sequence(LerpFunc(upd, fromData=0, toData=1, duration=3.0), Func(upd, 1.0),
                         Func(body.node().setText, ""))
 
@@ -519,19 +494,19 @@ class Story(TransformerSteps):
     def s_return(self, i):
         r = self.round(i)
         pnl = self.panels[r["name"]]
-        crate = Chip(self.board, "tool result", GREEN, ("tmp",), 0.42)
+        crate = Chip(self.board, t("story.chip.tool_result"), GREEN, ("tmp",), 0.42)
         start = Point3(pnl["cx"], 0, pnl["cz"] - PANEL_H / 2 - 0.4)
         crate.np.setPos(start)
         crate.np.hide()
-        squash = self.collapse(("out", i), "tool call ({} tokens)".format(len(r["toks"])), ORANGE)
+        squash = self.collapse(("out", i), t("story.chip.tool_call", n=len(r["toks"])), ORANGE)
         toks = ["<tool>"] + r["result_toks"]
         new = []
-        for t in toks[:13]:
-            c = self.add_chip(word(t), GREY if t.startswith("<") else GREEN, ("res", i))
+        for tk in toks[:13]:
+            c = self.add_chip(word(tk), GREY if tk.startswith("<") else GREEN, ("res", i))
             c.np.hide()
             new.append(c)
         if len(toks) > 13:
-            c = self.add_chip("+{} more".format(len(toks) - 13), GREEN, ("res", i))
+            c = self.add_chip(t("story.chip.more", n=len(toks) - 13), GREEN, ("res", i))
             c.np.hide()
             new.append(c)
         c = self.add_chip("<ai>", GREY, ("ai", i))
@@ -554,21 +529,17 @@ class Story(TransformerSteps):
                        fade_out(crate.np, 0.3), Func(crate.np.hide),
                        Parallel(*[Sequence(Wait(0.06 * k), Func(c.np.show), fade_in(c.np, 0.3))
                                   for k, c in enumerate(new)]), Wait(0.8))
-        return ("The program turns the tool's result into text and appends it to the context as a new message "
-                "(green chips). The model gets back a short text - numbers, file names, a file path - not the "
-                "picture itself.", seq)
+        return t("story.return.caption"), seq
 
     # ================================================================ answer
     def s_answer(self):
         n = len(self.engine.rounds) - 1
         r = self.round(n)
-        self.answer_text.node().setText("Answer:  " + r["text"])
+        self.answer_text.node().setText(fx(t("story.answer.label", text=r["text"]), Fonts.serif))
         self.answer_text.hide()
         seq = Sequence(self.view(PRED_VIEW + Vec3(0, 0, -0.8), 0, 0, PRED_D + 1), Func(self.set_bars, []),
                        Func(self.answer_text.show), fade_in(self.answer_text, 0.8), self.chat("Model", r["text"]),
                        Wait(0.5))
         loop = ("" if n == 0 else
-                "  -> <tool_call> -> the program runs real code -> result back into the context{}\n"
-                .format(" (twice here)" if n > 1 else ""))
-        return ("Summary:  your words -> tokens -> vectors (+ position) -> 2 x [attention, add & norm, feed-forward, add & norm] -> next-token probabilities\n"
-                + loop + "  -> final answer.   The LLM itself only ever predicts the next token.", seq)
+                t("story.answer.loop", twice=t("story.answer.twice") if n > 1 else ""))
+        return (t("story.answer.head") + loop + t("story.answer.tail"), seq)
