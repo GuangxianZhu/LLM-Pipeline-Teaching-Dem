@@ -84,8 +84,8 @@ class CacheStory:
 
     def make_row(self, parent):
         chips = []
-        for i, t in enumerate(sim.tokenize(PROMPT)):
-            c = Chip(parent, word(t), TOKEN_COLORS[i % len(TOKEN_COLORS)], ("p",))
+        for i, tok in enumerate(sim.tokenize(PROMPT)):
+            c = Chip(parent, word(tok), TOKEN_COLORS[i % len(TOKEN_COLORS)], ("p",))
             chips.append(c)
         for c, p in zip(chips, self.row_positions(chips)):
             c.np.setPos(p)

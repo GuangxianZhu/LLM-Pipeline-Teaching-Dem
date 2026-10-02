@@ -75,7 +75,7 @@ class Fonts:
                 if os.path.exists(p):
                     f = loader.loadFont(Filename.fromOsSpecific(p).getFullpath())
                     if f and f.isValid():
-                        f.setPixelsPerUnit(80)
+                        f.setPixelsPerUnit(120 if kind == "cjk" else 80)   # Chinese glyphs need more pixels
                         break
                     f = None
             setattr(cls, kind, f)
