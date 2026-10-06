@@ -120,12 +120,14 @@ EN = {
     "stage.Output": "Output",
     "stage.Tool": "Tool",
     "stage.Answer": "Answer",
+    "stage.Compute": "Compute",
     "stage.No cache": "No cache",
-    "stage.Why reuse": "Why reuse",
+    "stage.Why same": "Why same",
     "stage.KV cache": "KV cache",
-    "stage.Memory": "Memory",
-    "stage.Request 2": "Request 2",
-    "stage.Prefix rule": "Prefix rule",
+    "stage.Work": "Work",
+    "stage.Cost": "Money, power",
+    "stage.Next request": "Next request",
+    "stage.Cache miss": "Cache miss",
     "stage.Summary": "Summary",
     # ---------------------------------------------------------------- archmap.py
     "arch.output": "next-token probabilities",
@@ -338,78 +340,183 @@ EN = {
         "yellow <ai> row."),
     # ---------------------------------------------------------------- cache_story.py
     "cache.intro": (
-        'Question 7 continues question 3 ("{prompt}"). Why can a model with billions of numbers write '
-        'its answer so fast - and why is the second request after a tool call even faster? '
-        'The answer is CACHING.'),
-    "cache.context": "context",
-    "cache.box_note": "computes K and V for every token it processes",
-    "cache.chart_title": "work for each new token  (tokens pushed through the Transformer)",
-    "cache.new_token": "new token {i}",
-    "cache.no_cache": "without cache",
-    "cache.with_cache": "with KV cache",
-    "cache.processing": "processing {n} tokens ...",
-    "cache.generated": "generated '{tok}'  -  that took {n} tokens of work",
-    "cache.total": "total work: {total}",
-    "cache.nocache.caption": (
-        "Without any cache: to write each new token (yellow), the model pushes the WHOLE context through "
-        "the Transformer again - all its layers, for every token. The work grows with every token "
-        "(bars), and for a long answer that is a huge waste."),
-    "cache.why.old": "all of this was computed\nin the previous step\n= same numbers again",
-    "cache.why.new": "only this column is new:\nthe new token's Q\ncompares with all K",
-    "cache.why.mask": "old tokens never look at\nnew ones (no arrows back)",
-    "cache.why.caption": (
-        "Why is recomputing a waste? Remember the attention table. When a new token arrives, only ONE new "
-        "column appears: its query compares with all keys. Old tokens may only look backwards, so their "
-        "K and V can never change. Same input, same numbers - so just keep them!"),
-    "cache.shelf": "KV cache  (stored K and V)",
-    "cache.prefill": "PREFILL: process the prompt once ({n} tokens)",
-    "cache.only_new": "only the NEW token is processed; old K, V are read from the cache",
-    "cache.same_answer": "same answer, a fraction of the work",
-    "cache.cache.caption": (
-        "With a KV CACHE: the prompt is processed once (PREFILL) and every token's K and V are stored on "
-        "the shelf. After that each new token needs only ONE pass; old K and V are simply read from "
-        "memory (DECODE). Compare the bars."),
-    "cache.mem.1": "for EVERY token the cache keeps:",
-    "cache.mem.2": "our tiny model:  K and V  x  2 layers  x  32 numbers  =  128",
-    "cache.mem.3": "a 7B model:  K and V  x  32 layers  x  4096 numbers",
-    "cache.mem.4": "= 262,144 numbers  =  about 0.5 MB",
-    "cache.mem.5": "10,000 tokens  ->  about 5 GB of GPU memory",
-    "cache.mem.caption": (
-        "The price: memory. The cache must hold K and V for every token, in every layer - the K and V "
-        "columns you saw inside attention (here for our tiny model and for a typical 7-billion-parameter "
-        "model, 16-bit). That is why long conversations are expensive, why "
-        "models have a context limit, and why newer models use tricks to shrink the cache."),
-    "cache.seg.system": "system + tools",
-    "cache.seg.user": "user message",
-    "cache.seg.call": "tool call",
-    "cache.seg.result": "tool result",
-    "cache.req1": "request 1",
-    "cache.server": "server cache",
-    "cache.req2": "request 2",
-    "cache.req2b": "request 2'",
-    "cache.req.out1": "-> tool call -> tool runs ...",
-    "cache.req.hit": "HIT: 190 tokens reused",
-    "cache.req.miss": "MISS: 55 computed",
-    "cache.req.ttft": "work before the first new token",
-    "cache.req.nocache": "no cache",
-    "cache.req.cachehit": "cache hit",
-    "cache.req.n245": "245 tokens",
-    "cache.req.n55": "55 tokens  -> faster, and cached tokens are usually billed much cheaper",
+        'Question 7: what does a cache actually save? We follow the green K matrix of question 3 '
+        '("{prompt}") - every number is the real tiny model. Step by step: what "computing" is, what '
+        '"computing again" is, how the cache saves it - and what that means in money and electricity.'),
+    "cache.x.note": "{n} tokens, each one a row of {d} numbers  (the X of question 3)",
+    "cache.x.caption": (
+        "First a reminder. The {n} tokens of the question each became a row of {d} numbers; stacked up they "
+        "are the matrix X. We want to find out what the model really does when it \"computes\" - and what "
+        "\"computing again\" means."),
+    "cache.k.demo": "one number of K = {terms} + ...   ({d} multiplications)  = {v:.2f}",
+    "cache.k.count": "{rows} rows done x {per} = {n} multiplications",
+    "cache.k.count2": "K and V together: {n} multiplications  (and that is only 1 head)",
+    "cache.k.caption": (
+        "THIS is computing: one row of X ({d} numbers) times one column of W_K ({d} numbers) - {d} "
+        "multiplications, added up - gives ONE number of K. A row of K has {dh} numbers = {per} "
+        "multiplications. Watch the {n} rows appear one by one. V is made the same way with W_V. Inside a "
+        "real model every layer is full of exactly these multiplications."),
+    "cache.first.out": "the model's first new token: '{tok}'  ({p:.1f} %)",
+    "cache.first.note": "with the new token X has {n} rows. Must the rows above be computed again?",
+    "cache.first.caption": (
+        "The model has predicted its first new token: '{tok}'. To write the SECOND token, '{tok}' is added "
+        "to the input: X now has {n} rows (the new one at the bottom, yellow). The question is: what about "
+        "the rows above - compute them again?"),
+    "cache.redo.label": "K  (2nd time)",
+    "cache.redo.arrow": "no cache: everything again",
+    "cache.redo.caption": (
+        "WITHOUT a cache: all {n} rows go through the model again, multiplied from scratch. The orange K on "
+        "the right is the result of this second pass. Look at the counter - for K alone that is {n} x 512 "
+        "multiplications, and the model does the same for Q, V, both heads, the feed forward and layer 2."),
+    "cache.cmp.same": "= difference {d:.3f}",
+    "cache.cmp.new": "new row",
+    "cache.cmp.waste": ("these {n0} rows: wasted work\n"
+                        "for K alone: {k} multiplications again\n"
+                        "the whole model (2 layers, every matrix):\n"
+                        "   all rows again:  {all}\n"
+                        "   only the new row:  {new}"),
+    "cache.cmp.caption": (
+        "Now compare row by row. The first {n0} rows are EXACTLY the old ones: difference 0.000 (same input "
+        "rows, same W_K). Only the last row is new. So \"computing again\" means: multiplying these {n0} "
+        "rows once more and getting not a single different number. Pure waste."),
+    "cache.mask.label": "attention weights  (layer 1, head 1)",
+    "cache.mask.legend": "black = masked, not allowed to look;  brighter = looks more",
+    "cache.mod.diff": "difference to A",
+    "cache.mask.rows": "who looks",
+    "cache.mask.cols": "is looked at  ->",
+    "cache.mask.col_note": ("column of the new token (yellow):\n"
+                            "the {n0} rows above are black = masked\n"
+                            "old tokens never look at the new one"),
+    "cache.mask.row_note": "only the new row\nlooks at every token",
+    "cache.mask.caption": (
+        "Why MUST they be the same? The attention table: every row may only look at itself and the rows "
+        "above (the black upper-right part is masked). The new token is the last row and the last column. "
+        "In that column every old row is black - old tokens never read the new one, so nothing about them "
+        "can change."),
+    "cache.l2.old": "layer 2 K  (1st time)",
+    "cache.l2.new": "layer 2 K  (2nd time)",
+    "cache.l2.diff": "difference",
+    "cache.l2.why": ("in layer 1 every row only looked at itself and the rows above,\n"
+                     "so the old rows enter layer 2 unchanged  ->  layer 2's K and V are the same.\n"
+                     "The feed forward works on each row alone: also unchanged."),
+    "cache.l2.caption": (
+        "Layer 2 too: the old rows leave layer 1 unchanged (they never saw the new token), so they enter "
+        "layer 2 unchanged, and layer 2's K and V are identical again. The feed forward handles every row on "
+        "its own. So in EVERY layer, the K and V of old tokens can be kept."),
+    "cache.store.shelf": "KV cache (the notebook)  -  kept in GPU memory",
+    "cache.store.l1h2": "layer 1  head 2",
+    "cache.store.l2h1": "layer 2  head 1",
+    "cache.store.l2h2": "layer 2  head 2",
+    "cache.store.mem": "per token: {per} numbers (K and V x 2 layers x 2 heads x 16);  {n} tokens: {tot}",
+    "cache.store.caption": (
+        "They never change - so keep them. The K and V of every token, in every layer and every head, go "
+        "onto the shelf: the KV CACHE, the model's notebook. Only K and V: a new token later needs the old "
+        "tokens' K (to compare with) and V (to mix) - nothing else of them."),
+    "cache.one.xrow": "only the row of the new token '{tok}'",
+    "cache.one.q": "q = x · W_Q  (the new token's query)",
+    "cache.one.scores": "ONE row of scores: q against the {n} K on the shelf -> softmax",
+    "cache.one.result": ("next token: '{tok}'\n"
+                         "with cache {pc:.4f} %,  without cache {pf:.4f} %\n"
+                         "largest difference {diff:.0e} (computer rounding) - the same result"),
+    "cache.one.count": ("multiplications (whole model):\n"
+                        "   no cache, all 14 rows again:  {all}\n"
+                        "   with cache, 1 row:  {new}"),
+    "cache.one.caption": (
+        "WITH the cache, writing the second token: only the new row is computed. x · W_K and x · W_V give its "
+        "K and V - they go to the bottom of the shelf. x · W_Q gives q, which is compared with all {n1} K on "
+        "the shelf: ONE row of scores, not a whole table. The prediction is exactly the same, for about a "
+        "tenth of the work."),
+    "cache.bars.title": "multiplications to write each new token  (the whole tiny model)",
+    "cache.bars.tok": "token {k}\n({n} rows)",
+    "cache.bars.legend": "grey = no cache (all rows again)\nyellow = KV cache (one row)",
+    "cache.bars.total": ("the whole tool call, {k} tokens:\n"
+                         "   no cache  {no} multiplications\n"
+                         "   with cache  {ca}\n"
+                         "   {x:.0f} times less"),
+    "cache.bars.caption": (
+        "Token by token: without a cache (grey) every new token recomputes ALL rows, so the work keeps "
+        "growing. With the cache (yellow) it is one row each time - almost flat. Over the whole tool call the "
+        "gap gets huge."),
+    "cache.m1.title": "a chat already has {hist} tokens; you send {new} more",
+    "cache.m1.no": "no cache",
+    "cache.m1.hit": "cache hit",
+    "cache.m1.r_tok": "tokens to compute",
+    "cache.m1.r_usd": "input price (US$)",
+    "cache.m1.r_yen": "in yen (about)",
+    "cache.m1.r_time": "time on one GPU",
+    "cache.m1.r_energy": "electricity (estimate)",
+    "cache.m1.bar_no": "{n} tokens computed again",
+    "cache.m1.bar_hit": "only {n}",
+    "cache.m1.how": (
+        "How: price = tokens x the Claude Sonnet 5.5 price list (Oct 2026, per million tokens:\n"
+        "   input $2, writing the cache $2.50, reading the cache $0.20);  US$ 1 = 150 yen.\n"
+        "Electricity is an ESTIMATE: a made-up model with 70 billion parameters (Claude's size is\n"
+        "   not public) needs about 70 billion multiplications per token; one H100 GPU, about 700 W,\n"
+        "   200 trillion multiply-adds per second  ->  about {J:.2f} J and {ms:.2f} ms per token (no cooling).\n"
+        "Without the cache this one message uses about {phone:.0f} % of a phone battery.\n"
+        "Reading the cache moves data, so it is not free - but far less."),
+    "cache.m1.caption": (
+        "The same idea at real size: a chat with 20,000 tokens so far (system prompt, tool descriptions, "
+        "messages), and you send one more sentence. Without a cache 20,050 tokens are computed again; with a "
+        "cache hit only the new 50. The input price drops about {x:.0f} times."),
+    "cache.m2.title": "a whole chat: {turns} rounds.  system + tools {sys} tokens, every round adds {per}",
+    "cache.m2.axis": "round  (input price of each round: grey = no cache, yellow = cache)",
+    "cache.m2.sum": ("input price of the whole chat:\n"
+                     "   no cache  {no}  (about {noy} yen)\n"
+                     "   cache  {hit}  (about {hity} yen),  {x:.1f} times cheaper\n"
+                     "tokens computed:  {tn}  vs  {th}\n"
+                     "electricity (estimate):  {wn}  vs  {wh}\n"
+                     "(round 1 costs 25 % more: writing the cache; from round 2 it pays back)\n"
+                     "(the output is the same in both, not counted)"),
+    "cache.m2.class": ("a class of {c}, everyone has such a chat once:\n"
+                       "   no cache  {no}  (about {noy} yen),  {kn:.2f} kWh\n"
+                       "   cache  {hit}  (about {hity} yen),  {kh:.2f} kWh\n"
+                       "   {kn:.2f} kWh costs about {en:.0f} yen of electricity (31 yen/kWh)"),
+    "cache.m2.caption": (
+        "A whole chat of 30 rounds: the context gets longer every round. Without a cache every round reads "
+        "the whole, growing history again (the grey bars keep rising). With a cache only the new part is paid "
+        "in full, the old part at a tenth of the price. This is why long chats need the cache."),
+    "cache.req.r1": "request 1",
+    "cache.req.r2": "request 2",
+    "cache.req.call": "tool call  {n} tokens",
+    "cache.req.result": "tool result  {n} tokens",
+    "cache.req.hit": "cache hit: {n} tokens use the K and V on the shelf",
+    "cache.req.miss": "computed: {n}",
+    "cache.req.why": ("compared token by token from the start; identical = use the stored K and V.\n"
+                      "That is why APIs like Claude's charge only a tenth for reading the cache: almost no computing."),
     "cache.req.caption": (
-        "Across requests: after the tool runs, the program sends a SECOND request. Its beginning is exactly "
-        "the same as request 1. The server kept the K and V of that prefix (prompt cache), so it compares "
-        "token by token from the start: everything identical is a CACHE HIT; only the new part is computed."),
-    "cache.prefix.changed": 'someone added "Time: 14:47" here',
-    "cache.prefix.miss": "MISS from the change to the end: about 240 tokens computed again",
-    "cache.prefix.rule": "rule: put things that never change FIRST, things that change at the END",
-    "cache.prefix.caption": (
-        "Why only the PREFIX? Every token's K and V depend on ALL tokens before it (attention mixed them "
-        "in). Change one early token and every K and V after it is different - the cache is useless from "
-        "there on. One small change at the start = a full miss."),
-    "cache.summary.caption": (
-        "Summary:  KV cache = inside one answer, store each token's K and V so every new token needs only "
-        "one pass.  Prompt cache = between requests, reuse the stored K and V of an identical prefix "
-        "(hit), compute only the new part (miss).  Cost: GPU memory."),
+        "The NEXT request (prompt cache): the tool ran, the program appends its result and asks again. The "
+        "first {n} tokens are exactly as before, and the server still has their K and V (by default about 5 "
+        "minutes) - they are reused. Only the {m} new tokens are computed."),
+    "cache.chg.edit": "one word changed: tank -> wafer",
+    "cache.chg.layer": "layer {l} K",
+    "cache.chg.n1": "layer 1: only the changed row is different",
+    "cache.chg.n2": "layer 2: EVERY row from the change down is different\n(the rows below saw it in attention)",
+    "cache.chg.rule": ("the cache can only be used up to the first different token.\n"
+                       "So: things that never change (system prompt, tools) FIRST,\n"
+                       "things that change (the time, the new question) at the END."),
+    "cache.chg.caption": (
+        "Now change one early word (tank -> wafer). In layer 1 only that row changes. But in layer 2 every "
+        "row from the change downwards is different - the rows below looked at it in attention. So the cache "
+        "is valid only up to the first different token; everything after it is computed again."),
+    "cache.mod.a": "K of model A",
+    "cache.mod.b": "K of model B\n(other weights)",
+    "cache.mod.note": ("same tokens, different weights  ->  every row of K is different.\n"
+                       "the K and V stored by the other model are useless here.\n"
+                       "example, a chat with {hist} tokens:\n"
+                       "   same model, cache hit:  {hit}  (about {hity} yen)\n"
+                       "   switch models:  {sw}  (about {swy} yen), everything written to the cache again"),
+    "cache.mod.caption": (
+        "Switch to another model: the same tokens, but a different W_K, so K comes out completely different. "
+        "The notebook of the old model cannot be read by the new one - the whole chat must be computed again. "
+        "That is why switching models in the middle of a long chat costs more tokens."),
+    "cache.sum.mem": "the price: the cache takes GPU memory, so the server keeps it only a short time\n"
+                     "(Claude API: 5 minutes by default)",
+    "cache.sum.caption": (
+        "Summary:  computing = multiplying every row by the weights. A new token never changes the old rows' "
+        "K and V, so they are stored (KV cache) and each new token needs one row. A next request with the "
+        "same beginning reuses them (prompt cache). Change an early word, switch models or wait too long: "
+        "everything again - slower, pricier, more electricity."),
 }
 
 # ====================================================================== 中文
@@ -462,12 +569,14 @@ ZH = {
     "stage.Output": "输出",
     "stage.Tool": "工具",
     "stage.Answer": "回答",
+    "stage.Compute": "计算",
     "stage.No cache": "无缓存",
-    "stage.Why reuse": "为何复用",
+    "stage.Why same": "为何相同",
     "stage.KV cache": "KV 缓存",
-    "stage.Memory": "内存",
-    "stage.Request 2": "请求 2",
-    "stage.Prefix rule": "前缀规则",
+    "stage.Work": "工作量",
+    "stage.Cost": "钱和电",
+    "stage.Next request": "下次请求",
+    "stage.Cache miss": "缓存失效",
     "stage.Summary": "总结",
     # ---------------------------------------------------------------- archmap.py
     "arch.output": "下一个词元的概率",
@@ -667,73 +776,162 @@ ZH = {
         "前馈网络单独处理每一行，这样重复两次（2 层）。请跟着黄色的 <ai> 那一行看。"),
     # ---------------------------------------------------------------- cache_story.py
     "cache.intro": (
-        '第 7 题接着第 3 题（"{prompt}"）。一个有几十亿个数的模型，为什么能写得这么快？'
-        '为什么工具调用之后的第二次请求还要更快？答案是：缓存。'),
-    "cache.context": "上下文",
-    "cache.box_note": "为它处理的每个词元计算 K 和 V",
-    "cache.chart_title": "生成每个新词元的工作量  (送进 Transformer 的词元数)",
-    "cache.new_token": "新词元 {i}",
-    "cache.no_cache": "不用缓存",
-    "cache.with_cache": "使用 KV 缓存",
-    "cache.processing": "正在处理 {n} 个词元 ...",
-    "cache.generated": "生成了 '{tok}'  -  花了 {n} 个词元的工作量",
-    "cache.total": "总工作量：{total}",
-    "cache.nocache.caption": (
-        "没有任何缓存：每写一个新词元（黄色），模型都要把整个上下文重新送进 Transformer——"
-        "所有的层，每个词元都要算一遍。工作量随着词元增多越来越大（柱子），回答一长，浪费就很大。"),
-    "cache.why.old": "这些在上一步\n已经算过了\n= 又是一样的数",
-    "cache.why.new": "只有这一列是新的：\n新词元的 Q\n和所有的 K 比较",
-    "cache.why.mask": "旧词元不会去看\n新词元（没有往回的箭头）",
-    "cache.why.caption": (
-        "为什么重新计算是浪费？回想一下注意力表。来了一个新词元，只会多出一列：它的查询和所有的键比较。"
-        "旧词元只能往前看，所以它们的 K 和 V 永远不会变。输入一样，数就一样——那就存起来！"),
-    "cache.shelf": "KV 缓存  (存下来的 K 和 V)",
-    "cache.prefill": "预填充：把提示词处理一遍（{n} 个词元）",
-    "cache.only_new": "只处理新词元；旧的 K、V 直接从缓存里读",
-    "cache.same_answer": "答案一样，工作量少得多",
-    "cache.cache.caption": (
-        "用了 KV 缓存：提示词只处理一次（预填充），每个词元的 K 和 V 都存到架子上。"
-        "之后每个新词元只需要算一次；旧的 K 和 V 直接从内存里读（解码）。比一比柱子。"),
-    "cache.mem.1": "缓存为每个词元保存：",
-    "cache.mem.2": "我们的迷你模型：  K 和 V  x  2 层  x  32 个数  =  128",
-    "cache.mem.3": "70 亿参数的模型：  K 和 V  x  32 层  x  4096 个数",
-    "cache.mem.4": "= 262,144 个数  =  约 0.5 MB",
-    "cache.mem.5": "10,000 个词元  ->  约 5 GB 显存",
-    "cache.mem.caption": (
-        "代价是内存。缓存必须为每个词元、每一层都存下 K 和 V——就是你在注意力里看到的那些 K 和 V 列"
-        "（这里分别是我们的迷你模型，和一个典型的 70 亿参数模型，16 位）。"
-        "所以长对话很贵，所以模型有上下文长度限制，所以新模型会想办法把缓存压小。"),
-    "cache.seg.system": "系统提示词 + 工具",
-    "cache.seg.user": "用户消息",
-    "cache.seg.call": "工具调用",
-    "cache.seg.result": "工具结果",
-    "cache.req1": "请求 1",
-    "cache.server": "服务器缓存",
-    "cache.req2": "请求 2",
-    "cache.req2b": "请求 2'",
-    "cache.req.out1": "-> 工具调用 -> 工具运行中 ...",
-    "cache.req.hit": "提示缓存命中：复用了 190 个词元",
-    "cache.req.miss": "未命中：重算了 55 个",
-    "cache.req.ttft": "输出第一个新词元之前的工作量",
-    "cache.req.nocache": "不用缓存",
-    "cache.req.cachehit": "缓存命中",
-    "cache.req.n245": "245 个词元",
-    "cache.req.n55": "55 个词元  -> 更快，而且缓存的词元通常收费便宜得多",
+        '第 7 题：缓存到底省了什么？我们跟着第 3 题那张绿色的 K 矩阵走（问题："{prompt}"），'
+        '全部是迷你模型的真实数字。一步一步看：什么叫"算"，什么叫"重新算"，缓存怎么省，最后换算成钱和电。'),
+    "cache.x.note": "{n} 个词元，每个是一行 {d} 个数（第 3 题见过的 X）",
+    "cache.x.caption": (
+        "先回忆一下：问题里的 {n} 个词元，每个变成一行 {d} 个数，叠起来就是矩阵 X。"
+        "我们要弄清楚：模型\"算\"的时候到底在算什么，\"重新算\"又是什么意思。"),
+    "cache.k.demo": "K 的一个数 = {terms} + ...（共 {d} 次乘法）= {v:.2f}",
+    "cache.k.count": "已算 {rows} 行 × {per} 次 = {n} 次乘法",
+    "cache.k.count2": "K 和 V 一共 {n} 次乘法（这还只是 1 个头）",
+    "cache.k.caption": (
+        "这就是\"算\"：X 的一行（{d} 个数）乘 W_K 的一列（{d} 个数），乘 {d} 次再加起来，得到 K 的 1 个数。"
+        "K 的一行有 {dh} 个数 = {per} 次乘法。看 {n} 行一行一行出来。V 用 W_V 同样算。"
+        "真实模型的每一层里，全是这种乘法。"),
+    "cache.first.out": "模型预测的第一个新词元：'{tok}'（{p:.1f}%）",
+    "cache.first.note": "接上新词元后 X 有 {n} 行。上面那些行要不要再算一遍？",
+    "cache.first.caption": (
+        "模型预测出了第一个新词元 '{tok}'。要写第 2 个词元，就把 '{tok}' 接到输入后面："
+        "X 现在有 {n} 行（新的一行在最下面，黄框）。问题来了：上面那些行，要不要再算一遍？"),
+    "cache.redo.label": "K（第 2 次）",
+    "cache.redo.arrow": "不用缓存：全部再算一遍",
+    "cache.redo.caption": (
+        "不用缓存的做法：{n} 行全部重新送进模型，从头再乘。右边橙色的 K 就是第二次算出来的。"
+        "看计数器：光 K 这一项就是 {n} × 512 次乘法；Q、V、两个头、前馈网络、第 2 层也都要再算。"),
+    "cache.cmp.same": "= 差 {d:.3f}",
+    "cache.cmp.new": "新的一行",
+    "cache.cmp.waste": ("这 {n0} 行：白算了\n"
+                        "光 K 这一项就白乘了 {k} 次\n"
+                        "整个模型（2 层、所有矩阵）：\n"
+                        "   全部重算：{all} 次\n"
+                        "   只算新的一行：{new} 次"),
+    "cache.cmp.caption": (
+        "逐行对比：前 {n0} 行和第一次算的完全一样，差 0.000（同样的输入行，同样的 W_K）。只有最后一行是新的。"
+        "所谓\"重新算\"，就是把这 {n0} 行又乘了一遍，结果一个数都没变——纯属浪费。"),
+    "cache.mask.label": "注意力权重（第 1 层 第 1 个头）",
+    "cache.mask.legend": "黑格 = 被遮住，不准看；越亮 = 看得越多",
+    "cache.mod.diff": "和模型 A 的差",
+    "cache.mask.rows": "谁在看",
+    "cache.mask.cols": "被看的词元 ->",
+    "cache.mask.col_note": ("新词元这一列（黄框）：\n"
+                            "上面 {n0} 行全是黑的 = 被遮住\n"
+                            "旧词元从来不看新词元"),
+    "cache.mask.row_note": "只有新的这一行\n会看全部词元",
+    "cache.mask.caption": (
+        "为什么一定一样？看注意力表：每一行只能看自己和上面的行（右上角黑的部分被遮住了）。"
+        "新词元是最后一行、最后一列。这一列里旧的行全是黑的——旧词元从来不读新词元，所以它们的结果不可能变。"),
+    "cache.l2.old": "第 2 层 K（第 1 次）",
+    "cache.l2.new": "第 2 层 K（第 2 次）",
+    "cache.l2.diff": "和上次的差",
+    "cache.l2.why": ("第 1 层里每一行只看了自己和上面的行，\n"
+                     "所以旧行进入第 2 层时没变 -> 第 2 层的 K、V 也一样。\n"
+                     "前馈网络是一行一行单独算的，也不变。"),
+    "cache.l2.caption": (
+        "第 2 层也一样：旧的行从第 1 层出来没变（它们没看到新词元），进入第 2 层也没变，"
+        "第 2 层的 K 和 V 又是一模一样。前馈网络每一行单独算。所以每一层里，旧词元的 K、V 都可以留着。"),
+    "cache.store.shelf": "KV 缓存（笔记本）- 存在 GPU 显存里",
+    "cache.store.l1h2": "第1层 头2",
+    "cache.store.l2h1": "第2层 头1",
+    "cache.store.l2h2": "第2层 头2",
+    "cache.store.mem": "每个词元存 {per} 个数（K 和 V × 2 层 × 2 个头 × 16）；{n} 个词元共 {tot} 个",
+    "cache.store.caption": (
+        "既然不会变，就存起来：每个词元在每一层、每个头的 K 和 V 都放到架子上——这就是 KV 缓存，模型的笔记本。"
+        "只存 K 和 V：以后新词元只需要旧词元的 K（拿来比较）和 V（拿来加权），别的都用不上。"),
+    "cache.one.xrow": "只有新词元 '{tok}' 这一行",
+    "cache.one.q": "q = x · W_Q（新词元的查询）",
+    "cache.one.scores": "只有 1 行分数：q 和架子上 {n} 个 K 比较 -> softmax",
+    "cache.one.result": ("下一个词元：'{tok}'\n"
+                         "用缓存 {pc:.4f}%，不用缓存 {pf:.4f}%\n"
+                         "最大差值 {diff:.0e}（电脑的舍入误差）——结果一样"),
+    "cache.one.count": ("乘法次数（整个模型）：\n"
+                        "   不用缓存，14 行全部重算：{all}\n"
+                        "   用缓存，只算 1 行：{new}"),
+    "cache.one.caption": (
+        "用缓存写第 2 个词元：只算新的这一行。x · W_K、x · W_V 得到它的 K、V，放到架子最下面；"
+        "x · W_Q 得到 q，和架子上全部 {n1} 个 K 比较——只出 1 行分数，不是整张表。"
+        "预测结果完全一样，工作量只要大约十分之一。"),
+    "cache.bars.title": "写每个新词元要多少次乘法（整个迷你模型）",
+    "cache.bars.tok": "第 {k} 个\n({n} 行)",
+    "cache.bars.legend": "灰色 = 不用缓存（全部重算）\n黄色 = 用 KV 缓存（只算一行）",
+    "cache.bars.total": ("整个工具调用，{k} 个词元：\n"
+                         "   不用缓存 {no} 次乘法\n"
+                         "   用缓存 {ca} 次\n"
+                         "   少了 {x:.0f} 倍"),
+    "cache.bars.caption": (
+        "一个词元一个词元地比：不用缓存（灰色），每写一个新词元都要把全部行重算，越往后越多；"
+        "用缓存（黄色），每次只算一行，几乎不变。整个工具调用算下来，差距非常大。"),
+    "cache.m1.title": "一段对话已经有 {hist} 个词元，你再发 {new} 个",
+    "cache.m1.no": "不用缓存",
+    "cache.m1.hit": "命中缓存",
+    "cache.m1.r_tok": "要计算的词元",
+    "cache.m1.r_usd": "输入费用（美元）",
+    "cache.m1.r_yen": "约合日元",
+    "cache.m1.r_time": "一块 GPU 的计算时间",
+    "cache.m1.r_energy": "耗电（估算）",
+    "cache.m1.bar_no": "{n} 个词元全部重算",
+    "cache.m1.bar_hit": "只算 {n} 个",
+    "cache.m1.how": (
+        "怎么算的：费用 = 词元数 × Claude Sonnet 5.5 价目表（2026 年 10 月，每百万词元：\n"
+        "   输入 $2，写缓存 $2.5，读缓存 $0.2）；汇率按 1 美元 = 150 日元。\n"
+        "耗电是估算：假设一个 700 亿参数的模型（Claude 的大小没有公开），\n"
+        "   读一个词元约 700 亿次乘法；一块 H100 GPU 约 700 W，每秒约 200 万亿次乘加\n"
+        "   -> 每个词元约 {J:.2f} 焦耳、{ms:.2f} 毫秒（不含散热）。\n"
+        "不用缓存时，这一句话的耗电约等于手机电池的 {phone:.0f}%。\n"
+        "读缓存也要搬数据，不完全是零，但小得多。"),
+    "cache.m1.caption": (
+        "放大到真实世界：一段已经有 2 万个词元的对话（系统提示、工具说明、聊天记录），你再发一句话。"
+        "不用缓存要把 20,050 个词元全部重算；命中缓存只算新的 50 个。输入费用便宜约 {x:.0f} 倍。"),
+    "cache.m2.title": "一整段对话：{turns} 轮。系统提示 + 工具 {sys} 个词元，每轮新增 {per} 个",
+    "cache.m2.axis": "第几轮（每轮的输入费用：灰 = 不用缓存，黄 = 用缓存）",
+    "cache.m2.sum": ("整段对话的输入费用：\n"
+                     "   不用缓存 {no}（约 {noy} 日元）\n"
+                     "   用缓存 {hit}（约 {hity} 日元），便宜 {x:.1f} 倍\n"
+                     "要计算的词元：{tn} 对 {th}\n"
+                     "耗电（估算）：{wn} 对 {wh}\n"
+                     "（第 1 轮写缓存要多付 25%，从第 2 轮起就赚回来）\n"
+                     "（输出部分两边一样，没算在里面）"),
+    "cache.m2.class": ("一个 {c} 人的班，每人这样聊一次：\n"
+                       "   不用缓存 {no}（约 {noy} 日元），{kn:.2f} kWh\n"
+                       "   用缓存 {hit}（约 {hity} 日元），{kh:.2f} kWh\n"
+                       "   {kn:.2f} kWh 的电费约 {en:.0f} 日元（按 31 日元/kWh）"),
+    "cache.m2.caption": (
+        "一整段对话，30 轮：前文每一轮都在变长。不用缓存，每一轮都要把越来越长的前文重读一遍（灰柱越来越高）；"
+        "用缓存，每轮只有新增的部分付全价，旧的按一成价读取。所以长对话一定要用缓存。"),
+    "cache.req.r1": "请求 1",
+    "cache.req.r2": "请求 2",
+    "cache.req.call": "工具调用 {n} 个",
+    "cache.req.result": "工具结果 {n} 个词元",
+    "cache.req.hit": "缓存命中：{n} 个词元直接用架子上的 K、V",
+    "cache.req.miss": "要算：{n} 个",
+    "cache.req.why": ("从头开始逐个词元比较；一模一样就用存好的 K、V。\n"
+                      "所以 Claude 这类 API 读缓存只收一成价：几乎不用算。"),
     "cache.req.caption": (
-        "跨请求：工具运行完后，程序会发出第二次请求。它的开头和请求 1 一模一样。"
-        "服务器把这段前缀的 K 和 V 留着了（提示缓存），所以从头开始一个词元一个词元地比较："
-        "完全相同的部分就是提示缓存命中；只需要计算新的部分。"),
-    "cache.prefix.changed": '有人在这里加了 "Time: 14:47"',
-    "cache.prefix.miss": "从改动处到结尾都未命中：约 240 个词元要重新计算",
-    "cache.prefix.rule": "规则：不变的内容放在最前面，会变的内容放在最后",
-    "cache.prefix.caption": (
-        "为什么只能复用前缀？因为每个词元的 K 和 V 都取决于它前面的所有词元（注意力把它们混了进来）。"
-        "改掉前面的一个词元，后面所有的 K 和 V 就都变了——从那里往后，缓存就没用了。"
-        "开头改一点点 = 整个未命中。"),
-    "cache.summary.caption": (
-        "总结：KV 缓存 = 在一次回答内部，存下每个词元的 K 和 V，这样每个新词元只需要算一遍。"
-        "提示缓存 = 在不同请求之间，复用相同前缀已存的 K 和 V（命中），只计算新的部分（未命中）。"
-        "代价：显存。"),
+        "下一次请求（提示缓存）：工具运行完，程序接上结果再问一次。开头 {n} 个词元和上次一字不差，"
+        "服务器上还留着它们的 K、V（默认约 5 分钟），直接拿来用；只有新增的 {m} 个词元要算。"),
+    "cache.chg.edit": "改了一个词：tank -> wafer",
+    "cache.chg.layer": "第 {l} 层 K",
+    "cache.chg.n1": "第 1 层：只有被改的那一行变了",
+    "cache.chg.n2": "第 2 层：从改动处往下全变了\n（下面的行在注意力里看到了它）",
+    "cache.chg.rule": ("缓存只能用到第一个不同的词元为止。\n"
+                       "所以：不变的内容（系统提示、工具）放最前面，会变的（时间、新问题）放最后面。"),
+    "cache.chg.caption": (
+        "把前面的一个词改掉（tank -> wafer）：第 1 层只有那一行变了；但到了第 2 层，从它往下每一行都变了——"
+        "下面的行在注意力里看到了它。所以缓存只能用到第一个不同的词元为止，后面全部重算。"),
+    "cache.mod.a": "模型 A 的 K",
+    "cache.mod.b": "模型 B 的 K\n（另一组权重）",
+    "cache.mod.note": ("同样的词元，权重不同 -> K 的每一行都不同。\n"
+                       "另一个模型存的 K、V 在这里完全用不上。\n"
+                       "例：对话已有 {hist} 个词元时——\n"
+                       "   继续用同一个模型，命中缓存：{hit}（约 {hity} 日元）\n"
+                       "   中途换模型：{sw}（约 {swy} 日元），全部重新写进缓存"),
+    "cache.mod.caption": (
+        "换一个模型：同样的词元，但 W_K 不一样，算出来的 K 完全不同。上一个模型的笔记，新模型一个字都读不了，"
+        "整段对话必须从头再算。这就是为什么长对话中途换模型会多花 token。"),
+    "cache.sum.mem": "代价：缓存占 GPU 显存，所以服务器只留一小会儿\n（Claude API 默认 5 分钟）",
+    "cache.sum.caption": (
+        "总结：\"算\" = 每一行乘一遍权重。新词元不会改变旧行的 K、V，所以存起来（KV 缓存），每个新词元只算一行；"
+        "下一次请求开头一样，也能直接用（提示缓存）。改了前面的词、换了模型、隔太久过期，就只能从头再算。"),
 }
 
 STRINGS = {"en": EN, "zh": ZH}

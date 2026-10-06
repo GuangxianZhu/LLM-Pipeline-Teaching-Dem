@@ -140,12 +140,17 @@ Along the way: the **tracker** (bottom right) shows `<ai>`'s current 32 numbers,
 <details>
 <summary><b>Question 7: caching, step by step</b></summary>
 
-1. **No cache** – every new token pushes the whole context through the Transformer again (work 10, 11, 12, 13…)
-2. **Why reuse** – the attention table grows by only one column; old tokens never look forward, so their K and V never change
-3. **KV cache** – prefill once, then one pass per token; old K/V are read from the cache shelf
-4. **Memory** – K and V × layers × numbers per token → long chats cost GPU memory
-5. **Request 2** – after a tool call the next request starts with the same prefix → cache HIT for the prefix, only the new part is computed
-6. **Prefix rule** – change one early token and everything after it misses; keep stable content first, changing content last
+It follows ONE thing from start to end: the green K matrix of layer 1 (the same one as in question 3).
+All numbers come from the real tiny model; the run with the cache (`tiny/kv.py`) gives the same probabilities as the run without it.
+
+1. **Compute** – X · W_K = K, row by row, with a live count of multiplications: this is what "computing" means
+2. **No cache** – the model wrote `<tool_call>`; X has 14 rows and all 14 are multiplied again. Row by row, 13 come out exactly the same (difference 0.000)
+3. **Why same** – the attention mask: old rows never look at the new token; layer 2 is identical too
+4. **KV cache** – K and V go on the shelf; the next token needs ONE row and ONE row of scores (about 1/12 of the work here)
+5. **Work** – multiplications per new token, without / with cache, and for the whole 46-token tool call
+6. **Money, power** – the same at real size: a 20,000-token chat plus one message, and a 30-round chat for a class of 40 (API list price; electricity as a clearly labelled estimate)
+7. **Next request** – the next request starts with the same 59 tokens → cache hit; only the new tokens are computed
+8. **Cache miss** – change one early word (tank → wafer): layer 1 changes one row, layer 2 every row below it. Another model (other weights) cannot reuse anything
 </details>
 
 ## What is real
@@ -176,7 +181,7 @@ Along the way: the **tracker** (bottom right) shows `<ai>`'s current 32 numbers,
 | `archmap.py` | the GPT architecture map on the left |
 | `engine.py` | runs the whole conversation with the real model and the real tools |
 | `tiny/` | the tiny GPT: `model.py` (numpy inference + trace), `data.py`, `train.py`, weights, vocab |
-| `cache_story.py` | question 7: KV cache and prompt-cache hits |
+| `cache_story.py` | question 7: what computing again means, KV cache, prompt cache, cost (`tiny/kv.py`: one token with the cache) |
 | `kit.py` | drawing kit (heatmaps, arrows, token boxes, text) |
 | `sim.py` | tokenizer helpers |
 | `tools.py` | the four real tools |

@@ -382,7 +382,8 @@ class App(ShowBase):
         self.idx += 1
         st = self.steps[self.idx]
         default_map = {"Context": ("input",), "Tokens": ("input",), "Output": ("linear", "softmax", "output"),
-                       "Why reuse": ("attn",), "KV cache": ("attn",), "Memory": ("attn",)}
+                       "Compute": ("attn",), "No cache": ("attn",), "Why same": ("attn",),
+                       "KV cache": ("attn",)}
         self.ui.arch.highlight(*default_map.get(st.stage, ()))
         caption, ival = st.build()
         self.ui.set_stage(st.stage)

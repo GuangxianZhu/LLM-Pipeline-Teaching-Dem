@@ -26,7 +26,7 @@ CODE_FILES = ["story.py", "tf_steps.py", "cache_story.py", "main.py", "archmap.p
 ALLOWED = {
     # --- internal keys / identifiers (logic, node names, dict keys)
     "Context", "Tokens", "Embedding", "Attention", "Add & Norm", "Feed Fwd", "Output", "Tool", "Answer",
-    "No cache", "Why reuse", "KV cache", "Memory", "Request 2", "Prefix rule", "Summary",   # stage keys
+    "Compute", "No cache", "Why same", "KV cache", "Work", "Cost", "Next request", "Cache miss", "Summary",   # stage keys
     "input", "attn", "linear", "softmax", "output", "add1", "add2", "ffn", "pos", "embed",   # architecture-map keys
     "first", "name", "rest", "to_name", "tool", "answer", "number", "terminal", "text", "kind", "cache",
     "calculator", "run_terminal", "plot_chart", "generate_image",                           # tool names (model output)
@@ -56,7 +56,7 @@ ALLOWED = {
     "Transformer",                                                     # the name of the architecture
     "You are a helpful assistant. You can call tools.",                # the system prompt = model input
     "Plot the tank temperature for the last hour.",                    # question 3 = model input
-    "Here", " is", " the", " chart",                                   # tokens the model writes (question 7 demo)
+    " tank", " wafer", "<tool> ",                                      # tokens of the model input (question 7 demo)
     "<sys",                                                            # token prefix test
     "RGBA", "SELFTEST", "PASSED", "FAILED", "LLM_DEMO_OFFSCREEN", "window-type offscreen\n", "--selftest", "--lang",
     "--lang=",
